@@ -1,3 +1,6 @@
+import { getTableColumns } from "drizzle-orm"
+
+import { recipes } from "@/db/schema"
 import type { Recipe } from "@/db/schema"
 import type { RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 
@@ -54,6 +57,9 @@ export interface RecipeForPrompt {
   kcalPer100G: number
 }
 
+/** A `recipes` row minus the audit-only `rawCsvRow` blob — see allRecipesById. */
+export type RecipeForPipeline = Omit<Recipe, "rawCsvRow">
+
 export interface RecipeSelectorInput {
   cuisine: RecipeCuisine
   dietType: DietType
@@ -61,7 +67,12 @@ export interface RecipeSelectorInput {
   dailyTarget: DailyRecipeTarget
   slots: MealSlotInfo[]
   eligibleRecipesForPrompt: RecipeForPrompt[]
-  allRecipesById: Map<string, Recipe>
+  /**
+   * Every field the pipeline actually reads. Excludes `rawCsvRow`, which is
+   * an audit-only column: 46% of a 1.5 MB query payload that no runtime code
+   * path ever reads, fetched cross-region on every generation.
+   */
+  allRecipesById: Map<string, RecipeForPipeline>
   eligibleCuisines: RecipeCuisine[]
   clientAllergenTags: string[]
   /** recipe_aliases rows for the eligible pool — grounding's alias tier. */
@@ -93,7 +104,7 @@ export interface RecipeSelection {
 // Grounded (resolved to a real Recipe row) — grams start at the recipe's
 // own idealGrams and are only ever changed by recipe-balancer.ts.
 export interface GroundedRecipeItem {
-  recipe: Recipe
+  recipe: RecipeForPipeline
   grams: number
 }
 export interface GroundedRecipeMeal {
@@ -118,3 +129,13 @@ export interface RecipeSelectionResult {
   attempts: number
   warnings: string[]
 }
+
+/**
+ * Column selection for every pipeline query against `recipes` — everything
+ * except the audit-only `rawCsvRow`. Kept next to RecipeForPipeline so the
+ * runtime shape and the type it satisfies cannot drift apart.
+ */
+export const RECIPE_PIPELINE_COLUMNS = (() => {
+  const { rawCsvRow: _auditOnly, ...columns } = getTableColumns(recipes)
+  return columns
+})()

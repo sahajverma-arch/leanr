@@ -15,9 +15,9 @@
  * codebase, non-fatal to the whole generation).
  */
 
-import type { Recipe } from "@/db/schema"
 
-import type { GroundedRecipeDay, GroundedRecipeMeal, RecipeAchievedMacros, RecipeSelection, SelectedRecipeMeal } from "./recipe-types"
+
+import type { GroundedRecipeDay, GroundedRecipeMeal, RecipeAchievedMacros, RecipeForPipeline as Recipe, RecipeSelection, SelectedRecipeMeal } from "./recipe-types"
 
 export interface RecipeIndex {
   byExact: Map<string, Recipe>

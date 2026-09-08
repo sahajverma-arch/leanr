@@ -1,4 +1,4 @@
-import type { Recipe } from "@/db/schema"
+import type { RecipeForPipeline as Recipe } from "./recipe-types"
 
 /**
  * A thin field read, not a name-pattern heuristic — unlike the deleted dish

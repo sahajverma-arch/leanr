@@ -166,11 +166,22 @@ async function runBestOfNPhase(
   const messages = buildInitialMessages(input)
   const promptHash = hashString(JSON.stringify(messages))
 
-  const candidates: GroundedRecipeDay[][] = []
-  for (let attemptNumber = 1; attemptNumber <= n; attemptNumber++) {
-    const days = await attemptWholeWeek(input, index, messages, promptHash, attemptNumber, onAttempt)
-    if (days) candidates.push(days)
-  }
+  // Run the N attempts CONCURRENTLY. They are independent samples of the
+  // same prompt, not retries of a failure, so nothing depends on an earlier
+  // one — and sequentially they cost N x latency, which blew a real 60s
+  // Vercel function ceiling (3 calls at ~10s each, plus DB and balancing,
+  // timed out in production). Concurrently the LLM cost is one call's
+  // latency, not three.
+  //
+  // Promise.all preserves INPUT order regardless of completion order, which
+  // matters: pickBestWeek() breaks ties on the earliest candidate, so a
+  // fixed set of responses must always rank the same way. attemptWholeWeek()
+  // swallows its own failures and returns null, so one bad call cannot
+  // reject the batch.
+  const settled = await Promise.all(
+    Array.from({ length: n }, (_, i) => attemptWholeWeek(input, index, messages, promptHash, i + 1, onAttempt))
+  )
+  const candidates = settled.filter((days): days is GroundedRecipeDay[] => days !== null)
 
   const best = pickBestWeek(candidates, input.dailyTarget)
   if (best === null) {

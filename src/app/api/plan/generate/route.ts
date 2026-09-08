@@ -62,6 +62,7 @@ import { checkArchetypeAdherence } from "@/lib/plan/food-selector-validate"
 import type { FoodSelectorInput, PreviousWeekItem } from "@/lib/plan/food-selector-types"
 import { selectRecipes, RecipeSelectionRejectedError, type RecipeAttemptLog } from "@/lib/plan/recipe-selector"
 import { filterRecipePool } from "@/lib/foods/recipe-pool-filters"
+import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
 import type { ClientRecipeConstraints } from "@/lib/plan/recipe-plausibility-validate"
 import type { DailyRecipeTarget, MealSlotInfo, RecipeForPrompt, RecipeSelectorInput } from "@/lib/plan/recipe-types"
 import { seasonFor } from "@/lib/plan/season"
@@ -305,8 +306,11 @@ interface RecipeEngineContext {
  */
 async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextResponse> {
   const eligibleCuisines = eligibleCuisinesFor(ctx.cuisine)
+  // Explicit columns, omitting the audit-only rawCsvRow jsonb: it is 46%
+  // of a 1.5 MB payload that no runtime path reads, fetched cross-region on
+  // every generation. Contributed to a real 60s function timeout.
   const cuisineRows = await db
-    .select()
+    .select(RECIPE_PIPELINE_COLUMNS)
     .from(recipes)
     .where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisines)))
 

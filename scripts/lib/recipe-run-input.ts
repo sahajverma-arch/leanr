@@ -18,6 +18,7 @@ import { weekTargets, type RoadmapResult } from "../../src/lib/counselling/roadm
 import { clientRecipeAllergenTagsFromAnswers, dietTypeFromAnswers } from "../../src/lib/plan/client-profile-from-answers"
 import { eligibleCuisinesFor, templateRegionForCuisine, type RecipeCuisine } from "../../src/lib/foods/recipe-cuisine-mapping"
 import { filterRecipePool } from "../../src/lib/foods/recipe-pool-filters"
+import { RECIPE_PIPELINE_COLUMNS } from "../../src/lib/plan/recipe-types"
 import { buildRecipeIndex, type RecipeIndex } from "../../src/lib/plan/recipe-grounding"
 import type { ClientRecipeConstraints } from "../../src/lib/plan/recipe-plausibility-validate"
 import type { DailyRecipeTarget, MealSlotInfo, RecipeForPrompt, RecipeSelectorInput } from "../../src/lib/plan/recipe-types"
@@ -74,7 +75,7 @@ export async function buildRecipeRunContext(
 
   const eligibleCuisines = eligibleCuisinesFor(cuisine)
   const cuisineRows = await db
-    .select()
+    .select(RECIPE_PIPELINE_COLUMNS)
     .from(recipes)
     .where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisines)))
   const clientAllergenTags = clientRecipeAllergenTagsFromAnswers(session.answers as Answers)
