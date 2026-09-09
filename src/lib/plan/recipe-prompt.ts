@@ -20,8 +20,10 @@ Rules:
 - Choose ONLY from the recipe table provided in the user message. Never invent a dish that isn't listed.
 - A real meal usually centers on one MAIN dish, optionally with 1-2 lighter MID accompaniments (side, chutney, salad) — use the Main/Mid column as a guide for realistic composition, not a rigid rule.
 - Some recipes list a "[needs: ...]" or "[goes well with: ...]" tag after their row — real dietitian pairing data. "needs" is a hard requirement checked automatically (a day missing it gets sent back for a redo): if you choose that recipe, include a matching category or recipe from its "needs" list elsewhere in the same meal. "goes well with" is a soft preference, not required.
-- Lunch and dinner MUST each be built around a substantial dish (Category like Rice, Roti/Paratha/Bread, Dal Curry, Heavy Meal, Light Meal, Pulao/Biryani, Sabzi) that meaningfully contributes real calories and carbs — never build lunch or dinner entirely out of tea, coffee, soup, salad, raita, or a smoothie/shake. Those are appropriate for breakfast/mid_morning/evening accompaniments, not as the whole of a main meal.
-- The day's targets are a whole-day total across every meal, not just one meal — a day built mostly from light snacks and beverages will fall far short of the calorie and carb target even if each individual item looks reasonable. Weigh a lunch/dinner choice by how much it actually contributes toward the day's total, not just whether it's a plausible thing to eat.
+- Lunch and dinner MUST each be built around a substantial dish (Category like Rice, Roti/Paratha/Bread, Dal Curry, Heavy Meal, Light Meal, Pulao/Biryani, Sabzi) that meaningfully contributes real calories and macros — never build lunch or dinner entirely out of tea, coffee, soup, salad, raita, or a smoothie/shake. Those are appropriate for breakfast/mid_morning/evening accompaniments, not as the whole of a main meal.
+- PROTEIN IS THE TARGET THAT GETS MISSED, every time, and it is missed LOW. A normal-looking Indian day of roti, rice, sabzi, fruit and tea lands well under the protein target while overshooting carbs — measured repeatedly, not hypothetical. Every lunch and dinner must include at least one genuinely protein-dense dish (dal, chana, rajma, sprouts, paneer, tofu, soya, egg, curd, chicken or fish — read the Protein/100g column and prefer the higher numbers), and breakfast should usually include one too. Cereals, vegetables and fruit cannot reach the protein total no matter how much of them is served, so do not rely on them for it.
+- If a choice is between two otherwise-equally-realistic dishes, take the one with more protein per 100g and less carbohydrate per 100g. Carbs are the easiest macro to overshoot: rice, roti, paratha, poha, upma and potato add up faster than they look.
+- The day's targets are a whole-day total across every meal, not just one meal — a day built mostly from light snacks and beverages will fall far short of EVERY target even if each individual item looks reasonable. Weigh a lunch/dinner choice by how much it actually contributes toward the day's total, not just whether it's a plausible thing to eat.
 - Avoid using the same recipe more than twice across the 7 days — vary the week the way a real household would.
 - Commonality is a tie-breaker between otherwise-similar choices, not a reason to fill every meal with the simplest, most common snack or drink — hitting the day's calorie/macro totals with a substantial lunch and dinner matters more than commonality.
 - You may be given a short "Dietitian guidance" section for this client's region and goal — treat it as an experienced Indian dietitian's real judgment about realistic combinations, alongside (never instead of) the recipe table and targets above.
@@ -50,8 +52,25 @@ function formatRecipeTable(recipesForPrompt: RecipeForPrompt[]): string {
   return [header, ...rows].join("\n")
 }
 
+/**
+ * Absolute grams AND the share of calories each macro should supply.
+ *
+ * The shares are descriptive framing, not arithmetic the model performs —
+ * it still only ever outputs recipe names, and every quantity is computed in
+ * code afterwards (see CLAUDE.md "THE ONE RULE THAT MATTERS"). They exist
+ * because absolute grams alone gave the model no sense of BALANCE: measured
+ * across five independent samples for one real client, every single one came
+ * back protein ~11% under and carbs ~19% over. A gram total says how much;
+ * a share says what the day should be made of.
+ */
 function formatDailyTarget(target: DailyRecipeTarget): string {
-  return `Calories: ${Math.round(target.kcal)} kcal, Protein: ${Math.round(target.proteinG)} g, Carbs: ${Math.round(target.carbsG)} g, Fat: ${Math.round(target.fatG)} g, Fiber: ${Math.round(target.fiberG)} g`
+  const pct = (grams: number, kcalPerG: number) =>
+    target.kcal > 0 ? Math.round(((grams * kcalPerG) / target.kcal) * 100) : 0
+  return (
+    `Calories: ${Math.round(target.kcal)} kcal, Protein: ${Math.round(target.proteinG)} g, ` +
+    `Carbs: ${Math.round(target.carbsG)} g, Fat: ${Math.round(target.fatG)} g, Fiber: ${Math.round(target.fiberG)} g` +
+    ` (roughly ${pct(target.proteinG, 4)}% of calories from protein, ${pct(target.carbsG, 4)}% carbs, ${pct(target.fatG, 9)}% fat)`
+  )
 }
 
 /** Empty/absent (DIETITIAN_KNOWLEDGE_ENABLED off, or nothing retrieved) returns "" — the prompt is byte-identical to before this layer existed. */
