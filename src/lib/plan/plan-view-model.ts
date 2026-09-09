@@ -91,6 +91,8 @@ export interface PlanViewModel {
   }
   targets: Macros
   deviationPct: { kcal: number; proteinG: number; fatG: number; carbsG: number }
+  /** Generation warnings recorded on the plan row. Empty when the plan was a clean pass, or predates the column. */
+  warnings: string[]
   days: PlanViewDay[]
   weeklySummary: WeeklySummaryRow[]
   weeklyAvg: WeeklySummaryRow
@@ -442,6 +444,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
     },
     targets,
     deviationPct,
+    warnings: (plan.warnings as string[] | null) ?? [],
     days,
     weeklySummary,
     weeklyAvg,

@@ -297,6 +297,17 @@ export const dietPlans = pgTable("diet_plans", {
   targets: jsonb("targets").notNull(),
   achieved: jsonb("achieved").notNull(),
   deviation: jsonb("deviation").notNull(),
+  // Every reason this plan is not a clean pass, as a string[]: per-day macro
+  // misses, plausibility problems, variety breaches, serving-limit hits.
+  // Nullable so every historical row backfills as "nothing recorded" rather
+  // than "nothing wrong".
+  //
+  // Exists because the recipe engine's best-of-N path now SAVES its nearest
+  // week instead of rejecting it (a confirmed decision — see CLAUDE.md). That
+  // is only safe if the dietitian can see what is off, so these are persisted
+  // and rendered on the plan page rather than returned once in an API
+  // response nothing reads.
+  warnings: jsonb("warnings").$type<string[]>(),
   // Discriminates which generation pipeline produced this plan, and
   // therefore which item table (diet_plan_items vs diet_plan_recipe_items)
   // its meals' children live in. Defaults "exchange" so every historical

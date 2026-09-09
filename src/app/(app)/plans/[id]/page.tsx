@@ -26,6 +26,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
     roadmap,
     targets,
     deviationPct,
+    warnings,
     days,
     weeklySummary,
     weeklyAvg,
@@ -48,6 +49,23 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 pb-16 print:max-w-full">
+      {/* Generation warnings. The recipe engine's best-of-N path saves its
+          nearest week rather than rejecting it, so the dietitian is the one
+          who decides whether it is usable — which only works if they can see
+          what is off. Rendered before anything else, and kept in print. */}
+      {warnings.length > 0 && (
+        <div className="rounded-xl border-2 border-amber-500 bg-amber-50 p-4 text-amber-950">
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Needs your review before approving</h2>
+          <ul className="mt-2 space-y-1 text-sm">
+            {warnings.map((w, i) => (
+              <li key={i} className="leading-snug">
+                • {w}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Header */}
       <div className="rounded-xl bg-neutral-950 p-6 text-white">
         <div className="flex items-start justify-between gap-4">

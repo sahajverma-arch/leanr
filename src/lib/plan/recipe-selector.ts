@@ -16,7 +16,7 @@ import { buildDayRetryMessages, buildInitialMessages, type PromptMessage } from 
 import { llmRecipeDaySchema, llmRecipeSelectionSchema } from "./recipe-schema"
 import { buildRecipeIndex, groundSelection, type RecipeIndex } from "./recipe-grounding"
 import { balanceDayToTargets } from "./recipe-balancer"
-import { describeMacroProblems, isRecipeDayOffTarget, isRecipeWeekOffTarget } from "./recipe-validate"
+import { describeMacroProblems, isRecipeDayOffTarget, isRecipeWeekOffTarget, RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
 import { computeWeeklyAverage, pickBestWeek, weeklyDeviationScore } from "./recipe-week-score"
 import { blockingProblems, diagnoseDay } from "./recipe-day-diagnosis"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
@@ -198,6 +198,38 @@ async function runBestOfNPhase(
 }
 
 /**
+ * The headline a dietitian reads first: which macros the chosen week misses,
+ * by how much, and in which direction. Deliberately explicit about direction
+ * — "12% under" and "12% over" call for opposite corrections, and a bare
+ * percentage hides that.
+ */
+function offTargetSummary(
+  weeklyAverage: RecipeAchievedMacros,
+  target: RecipeSelectorInput["dailyTarget"],
+  attempts: number
+): string {
+  const keys = [
+    ["kcal", "kcal"],
+    ["proteinG", "protein"],
+    ["carbsG", "carbs"],
+    ["fatG", "fat"],
+  ] as const
+  const misses = keys
+    .map(([key, label]) => {
+      const pct = ((weeklyAverage[key] - target[key]) / target[key]) * 100
+      return { label, pct }
+    })
+    .filter((m) => Math.abs(m.pct) > RECIPE_MACRO_TOLERANCE * 100)
+    .map((m) => `${m.label} ${Math.abs(m.pct).toFixed(0)}% ${m.pct > 0 ? "over" : "under"}`)
+
+  return (
+    `NEEDS DIETITIAN REVIEW — this is the closest of ${attempts} generated weeks, and its weekly ` +
+    `average is outside the ${(RECIPE_MACRO_TOLERANCE * 100).toFixed(0)}% tolerance on: ${misses.join(", ")}. ` +
+    `Every day is listed below; decide whether it is usable or regenerate.`
+  )
+}
+
+/**
  * Everything a dietitian should see about a best-of-N week that the
  * weekly-average gate does NOT reject it for. Nothing is hidden: per-day
  * macro misses, plausibility problems, variety breaches and serving-limit
@@ -332,28 +364,26 @@ export async function selectRecipes(
   if (options.bestOfN && options.bestOfN > 0) {
     const { days, generationMode, modelUsed, attempts } = await runBestOfNPhase(input, index, options.bestOfN, options.onAttempt)
     const weeklyAverage = computeWeeklyAverage(days)
+    const offTarget = isRecipeWeekOffTarget(weeklyAverage, input.dailyTarget)
 
-    if (isRecipeWeekOffTarget(weeklyAverage, input.dailyTarget)) {
-      const overused = new Set(findVarietyViolations(days).map((v) => v.name))
-      const dayProblems = days
-        .map((day) => ({ dayIndex: day.dayIndex, problems: blockingProblems(day, input, constraints, overused) }))
-        .filter((d) => d.problems.length > 0)
-      const pct = (weeklyDeviationScore(days, input.dailyTarget) * 100).toFixed(1)
-      // Name the fallback explicitly: "best of 5" would be actively
-      // misleading when all 5 calls failed (e.g. an invalid API key) and
-      // this is really the deterministic selector's week.
-      const source =
-        generationMode === "fallback"
-          ? `every one of ${attempts} model call(s) failed, so the deterministic fallback week was used, and it`
-          : `best of ${attempts} attempt(s)`
-      throw new RecipeSelectionRejectedError(
-        `Recipe plan rejected: ${source} missed the weekly-average target by ${pct}% on average.`,
-        dayProblems,
-        days
-      )
+    // The nearest week is ALWAYS returned, never rejected — a confirmed
+    // decision (see CLAUDE.md "Best-of-N generation"), taken after measuring
+    // that the misses are systematic rather than random: five independent
+    // samples for one real client all came back protein ~11% under and carbs
+    // ~19% over, so resampling cannot rescue them and a rejection just leaves
+    // the dietitian with nothing.
+    //
+    // This is NOT the "always succeeds, warnings ignored" behaviour the "Do
+    // not" list forbids. The distinction is that the deviation is measured,
+    // named per macro, persisted on the plan row and rendered on the plan
+    // page — the dietitian decides whether it is usable, on the numbers,
+    // instead of the engine deciding for them and discarding the work.
+    const warnings = bestOfNWarnings(days, input, constraints)
+    if (offTarget) {
+      warnings.unshift(offTargetSummary(weeklyAverage, input.dailyTarget, attempts))
     }
 
-    return { selection: { days }, generationMode, modelUsed, attempts, warnings: bestOfNWarnings(days, input, constraints) }
+    return { selection: { days }, generationMode, modelUsed, attempts, warnings }
   }
 
   const { grounded, generationMode, modelUsed, attempts } = await runWholeWeekPhase(input, index, maxWeekAttempts, options.onAttempt)

@@ -536,6 +536,11 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
         deviation: deviations,
         generationMode: selectionResult.generationMode,
         modelUsed: selectionResult.modelUsed,
+        // Persisted, not just returned: the best-of-N path saves its nearest
+        // week rather than rejecting, so the dietitian needs to see what is
+        // off when they open the plan — not only in the response to the
+        // click that generated it.
+        warnings: selectionResult.warnings,
         preparedBy: ctx.user.id,
         status: "draft",
       })
