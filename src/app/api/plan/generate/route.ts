@@ -305,6 +305,24 @@ interface RecipeEngineContext {
  * CLAUDE.md "The recipe engine"'s reject-semantics section.
  */
 async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextResponse> {
+  // Phase timings, logged on every generation. This route has hit a
+  // production function timeout twice, and both times the dominant cost was
+  // guessed at before it was measured. A few console.logs make the next
+  // occurrence self-diagnosing from the Vercel runtime log alone.
+  const t0 = Date.now()
+  const phase: Record<string, number> = {}
+  let mark = t0
+  // Logs each phase AS IT COMPLETES, not once at the end: a function that
+  // times out is killed, so an end-of-request summary is exactly the log you
+  // never get when you most need it. Incremental lines survive the kill and
+  // show which phase was still running.
+  const lap = (name: string) => {
+    const now = Date.now()
+    phase[name] = now - mark
+    mark = now
+    console.log(`[plan/generate recipe] ${name}=${phase[name]}ms elapsed=${now - t0}ms`)
+  }
+
   const eligibleCuisines = eligibleCuisinesFor(ctx.cuisine)
   // Explicit columns, omitting the audit-only rawCsvRow jsonb: it is 46%
   // of a 1.5 MB payload that no runtime path reads, fetched cross-region on
@@ -365,6 +383,8 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
 
   const { dayIndexOffset, previousWeekLastDayRecipeNames } = await loadPreviousWeekRecipeSeed(ctx.roadmapId, ctx.weekNumber)
 
+  lap("dbReads")
+
   const recipeSelectorInput: RecipeSelectorInput = {
     cuisine: ctx.cuisine,
     dietType: ctx.dietType,
@@ -398,6 +418,7 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
       throw err
     }
   }
+  lap("llm")
 
   // Same knowledge injection for every attempt log row within this one
   // generation call — retrieval runs once per request, not once per
@@ -441,6 +462,7 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
   }
 
   if (rejectedError || !selectionResult) {
+    console.log(`[plan/generate recipe] REJECTED after ${Date.now() - t0}ms`)
     return NextResponse.json(
       { error: rejectedError?.message ?? "Recipe selection failed", dayProblems: rejectedError?.dayProblems ?? [] },
       { status: 422 }
@@ -569,6 +591,13 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
 
     return plan.id
   })
+  lap("dbWrite")
+  console.log(
+    `[plan/generate recipe] total=${Date.now() - t0}ms ` +
+      Object.entries(phase)
+        .map(([k, v]) => `${k}=${v}ms`)
+        .join(" ")
+  )
 
   return NextResponse.json(
     {
