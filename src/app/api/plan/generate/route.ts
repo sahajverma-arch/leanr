@@ -40,7 +40,7 @@ import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { env } from "@/lib/env"
 import { REGIONS, SEASONS } from "@/lib/foods/vocab"
-import { cuisineForTemplateRegion, eligibleCuisinesFor, RECIPE_CUISINES, templateRegionForCuisine, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
+import { eligibleCuisinesFor, RECIPE_CUISINES, templateRegionForCuisine, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import {
   ClientProfileError,
   clientAllergensFromAnswers,
@@ -61,6 +61,7 @@ import { selectFoods, type AttemptLog } from "@/lib/plan/food-selector"
 import { checkArchetypeAdherence } from "@/lib/plan/food-selector-validate"
 import type { FoodSelectorInput, PreviousWeekItem } from "@/lib/plan/food-selector-types"
 import { selectRecipes, RecipeSelectionRejectedError, type RecipeAttemptLog } from "@/lib/plan/recipe-selector"
+import { applyEngineDefault } from "@/lib/plan/generate-request-engine"
 import { filterRecipePool } from "@/lib/foods/recipe-pool-filters"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
 import type { ClientRecipeConstraints } from "@/lib/plan/recipe-plausibility-validate"
@@ -129,21 +130,10 @@ const recipeRequestSchema = z.object({
 // RECIPE request, and `cuisine` is derived from the `region` the UI already
 // sends. An explicit `engine` in the body still wins, so a caller can always
 // ask for either by name.
-const requestSchema = z.preprocess((body) => {
-  if (body && typeof body === "object" && !("engine" in (body as Record<string, unknown>))) {
-    const raw = body as Record<string, unknown>
-    if (env.RECIPE_ENGINE_ENABLED) {
-      const parsedRegion = z.enum(REGIONS).safeParse(raw.region)
-      return {
-        ...raw,
-        engine: "recipe",
-        cuisine: parsedRegion.success ? cuisineForTemplateRegion(parsedRegion.data) : "General",
-      }
-    }
-    return { ...raw, engine: "exchange" }
-  }
-  return body
-}, z.discriminatedUnion("engine", [exchangeRequestSchema, recipeRequestSchema]))
+const requestSchema = z.preprocess(
+  (body) => applyEngineDefault(body, env.RECIPE_ENGINE_ENABLED),
+  z.discriminatedUnion("engine", [exchangeRequestSchema, recipeRequestSchema])
+)
 
 function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10)
