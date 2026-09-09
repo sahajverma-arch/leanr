@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { applyEngineDefault } from "./generate-request-engine"
+import { applyEngineDefault, ExchangeEngineDisabledError } from "./generate-request-engine"
 
 /** Exactly what actions-bar.tsx and plan-actions-bar.tsx send — no `engine`, no `cuisine`. */
 const UI_BODY = { roadmapId: "8f2b1e2e-0000-4000-8000-000000000000", weekNumber: 1, region: "north_indian" }
@@ -39,8 +39,15 @@ describe("applyEngineDefault", () => {
     expect(out.cuisine).toBe("General")
   })
 
-  it("never overrides an explicit engine, in either direction", () => {
-    const exchange = applyEngineDefault({ ...UI_BODY, engine: "exchange" }, true) as Record<string, unknown>
+  it("REJECTS an explicit exchange request while the recipe engine is on", () => {
+    // Confirmed instruction: the exchange engine is off, not merely
+    // unpreferred. Rejecting is deliberate — silently rewriting a caller's
+    // explicit request would be the same surprise this exists to prevent.
+    expect(() => applyEngineDefault({ ...UI_BODY, engine: "exchange" }, true)).toThrow(ExchangeEngineDisabledError)
+  })
+
+  it("still allows an explicit exchange request when the recipe engine is off", () => {
+    const exchange = applyEngineDefault({ ...UI_BODY, engine: "exchange" }, false) as Record<string, unknown>
     expect(exchange.engine).toBe("exchange")
     expect(exchange.cuisine).toBeUndefined()
 

@@ -22,7 +22,6 @@ import { buildRecipeWarnings, offTargetSummary } from "./recipe-warnings"
 import { blockingProblems, diagnoseDay } from "./recipe-day-diagnosis"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { findDaysNeedingVarietyRetry, findVarietyViolations, MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
-import { recipeSelectorFallback } from "./recipe-selector-fallback"
 import type { GroundedRecipeDay, GroundedRecipeSelection, RecipeAchievedMacros, RecipeSelection, RecipeSelectionResult, RecipeSelectorInput } from "./recipe-types"
 
 const MAX_WEEK_ATTEMPTS = 3
@@ -186,14 +185,21 @@ async function runBestOfNPhase(
 
   const best = pickBestWeek(candidates, input.dailyTarget)
   if (best === null) {
-    const fallbackSelected = recipeSelectorFallback(input)
-    const grounded = groundSelection(fallbackSelected, index)
-    return {
-      days: grounded.days.map((day) => balanceDayToTargets(day, input.dailyTarget)),
-      generationMode: "fallback",
-      modelUsed: null,
-      attempts: n,
-    }
+    // NO DETERMINISTIC FALLBACK. Confirmed instruction, after a real
+    // generation came back from a fallback selector with generationMode
+    // "fallback" and modelUsed null — a plan a dietitian would reasonably
+    // assume was AI-composed, that no model ever saw.
+    //
+    // Failing loudly is the honest outcome: every attempt failed (timeouts,
+    // unparseable responses), so there is nothing to show, and quietly
+    // substituting a different algorithm hides that from the person who has
+    // to sign the plan off.
+    throw new RecipeSelectionRejectedError(
+      `Recipe plan generation failed: all ${n} model attempt(s) failed, so no plan was produced. ` +
+        `See the generation log for each attempt's error. Nothing was saved.`,
+      [],
+      []
+    )
   }
   return { days: best.days, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: candidates.length }
 }
@@ -239,10 +245,13 @@ async function runWholeWeekPhase(
     }
   }
 
-  const fallbackSelected = recipeSelectorFallback(input)
-  const grounded = groundSelection(fallbackSelected, index)
-  const balancedDays = grounded.days.map((day) => balanceDayToTargets(day, input.dailyTarget))
-  return { grounded: { days: balancedDays }, generationMode: "fallback", modelUsed: null, attempts: maxAttempts }
+  // Same rule as the best-of-N path: no deterministic substitute. A plan that
+  // no model composed must never be handed over as though one had.
+  throw new RecipeSelectionRejectedError(
+    `Recipe plan generation failed: all ${maxAttempts} whole-week attempt(s) failed, so no plan was produced. Nothing was saved.`,
+    [],
+    []
+  )
 }
 
 async function retryOneDay(

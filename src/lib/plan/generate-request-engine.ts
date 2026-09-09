@@ -1,3 +1,11 @@
+/** Thrown when a caller explicitly asks for the exchange engine while the recipe engine is enabled. */
+export class ExchangeEngineDisabledError extends Error {
+  constructor() {
+    super("The exchange engine is disabled while RECIPE_ENGINE_ENABLED is on. Send engine: \"recipe\", or omit the field.")
+    this.name = "ExchangeEngineDisabledError"
+  }
+}
+
 import { REGIONS } from "@/lib/foods/vocab"
 import { cuisineForTemplateRegion } from "@/lib/foods/recipe-cuisine-mapping"
 
@@ -21,8 +29,20 @@ export function applyEngineDefault(body: unknown, recipeEngineEnabled: boolean):
   if (!body || typeof body !== "object" || Array.isArray(body)) return body
   const raw = body as Record<string, unknown>
 
-  // An explicit engine always wins — a caller can still ask for either by name.
-  if ("engine" in raw) return raw
+  // With the recipe engine on, the exchange engine is OFF — not merely
+  // unpreferred. A confirmed instruction after a real generation silently
+  // came back from the exchange engine's deterministic fallback: "don't use
+  // exchange, not even as a fallback".
+  //
+  // An explicit `engine: "exchange"` is therefore rejected rather than
+  // quietly rewritten. Silently overriding a caller's explicit request would
+  // be the same class of surprise this is fixing.
+  if ("engine" in raw) {
+    if (recipeEngineEnabled && raw.engine === "exchange") {
+      throw new ExchangeEngineDisabledError()
+    }
+    return raw
+  }
 
   if (!recipeEngineEnabled) return { ...raw, engine: "exchange" }
 

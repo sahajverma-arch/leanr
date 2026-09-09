@@ -61,7 +61,7 @@ import { selectFoods, type AttemptLog } from "@/lib/plan/food-selector"
 import { checkArchetypeAdherence } from "@/lib/plan/food-selector-validate"
 import type { FoodSelectorInput, PreviousWeekItem } from "@/lib/plan/food-selector-types"
 import { selectRecipes, RecipeSelectionRejectedError, type RecipeAttemptLog } from "@/lib/plan/recipe-selector"
-import { applyEngineDefault } from "@/lib/plan/generate-request-engine"
+import { applyEngineDefault, ExchangeEngineDisabledError } from "@/lib/plan/generate-request-engine"
 import { filterRecipePool } from "@/lib/foods/recipe-pool-filters"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
 import type { ClientRecipeConstraints } from "@/lib/plan/recipe-plausibility-validate"
@@ -663,7 +663,19 @@ export async function POST(request: Request) {
     throw err
   }
 
-  const bodyResult = requestSchema.safeParse(await request.json().catch(() => null))
+  // safeParse only swallows ZodError — ExchangeEngineDisabledError is thrown
+  // from inside the preprocess and would otherwise escape as a 500 rather
+  // than the clear 400 it deserves.
+  const rawBody = await request.json().catch(() => null)
+  let bodyResult
+  try {
+    bodyResult = requestSchema.safeParse(rawBody)
+  } catch (err) {
+    if (err instanceof ExchangeEngineDisabledError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    throw err
+  }
   if (!bodyResult.success) {
     return NextResponse.json({ error: "Invalid request body", details: bodyResult.error.flatten() }, { status: 400 })
   }

@@ -1424,6 +1424,22 @@ here. Promising something untrue about a clinical number is worse than a vaguer 
 `RECIPE_ENGINE_ENABLED` defaults off everywhere. Both engines coexist in `route.ts`, gated by one
 `if` right after `weekTargets()`.
 
+**With the flag ON, the exchange engine is OFF — not merely unpreferred, and there is no fallback to
+it.** A confirmed instruction after a real production plan came back with `engine=exchange`,
+`generationMode=fallback`, `modelUsed=null`: the exchange engine's LLM food-selector had failed all
+three attempts (two 25s timeouts, one malformed response) and its deterministic selector silently
+produced the plan. A dietitian opening that plan has no way to tell it was composed by no model at
+all. An explicit `engine: "exchange"` now returns a 400 rather than being quietly rewritten —
+silently overriding a caller's explicit request would be the same class of surprise.
+
+**The recipe engine's own deterministic fallback was removed at the same time, for the same reason.**
+`recipeSelectorFallback` used to produce a week whenever every model attempt failed. It now throws:
+if all N attempts fail there is nothing to show, and substituting a different algorithm hides that
+from the person who signs the plan off. Failing loudly is the honest outcome. (`recipe-selector-
+fallback.ts` itself is left in place, unreferenced by the selector — it is still exercised by its own
+tests and is the obvious starting point if a deliberate, clearly-labelled offline mode is ever
+wanted.)
+
 **The flag now actually selects the engine, and for a while it did not.** `requestSchema`'s preprocess
 originally hardcoded `engine: "exchange"` whenever a caller omitted the field — written when the
 recipe engine was new and flagged off, with the open follow-up noted that "no UI passes
