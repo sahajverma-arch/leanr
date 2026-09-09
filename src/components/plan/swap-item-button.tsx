@@ -40,7 +40,12 @@ export function SwapItemButton({
     startTransition(async () => {
       try {
         await swapPlanItem(item.id, foodId)
-        toast.success("Swapped — grams recomputed, macros unchanged.")
+        // Deliberately not "macros unchanged": that holds for an exchange
+        // swap (same exchange type and count) but NOT for a recipe swap,
+        // where the new dish has different per-100g macros and the whole day
+        // is re-balanced around it. Promising something untrue about a
+        // clinical number is worse than a vaguer message.
+        toast.success("Swapped — quantities recomputed. Check the macros above.")
         setOpen(false)
         setCandidates(null)
       } catch (err) {

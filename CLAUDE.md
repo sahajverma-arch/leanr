@@ -1385,11 +1385,39 @@ vocabulary with no recipe-engine analog, and its raw-weight-cereal/pulse bullet 
 recipes (CSV grams are as-served/cooked weight, the opposite convention, stated explicitly in the
 recipe engine's own guidelines rather than silently reusing the misleading claim).
 
-**Explicit v1 non-goal, same as the dish-gram engine before it**: no swap support for recipe-engine
-plan items — the swap action keys off `diet_plan_items.exchange_type`, a column
-`diet_plan_recipe_items` doesn't have, so it naturally finds no row for a recipe item. Swapping a
-recipe would mean re-running grounding + rebalancing for one substitution, a genuinely separate
-feature, not implemented here.
+### Recipe swaps (2026-09-09)
+
+Swap support for recipe-engine items — previously an explicit v1 non-goal, now built on request.
+
+**Why it is a different feature from an exchange swap, not an extension of one.** An exchange swap
+keeps the exchange type and count, so the macros are unchanged *by construction* and only the food's
+identity and gram weight move — that is the exchange system's core guarantee. A recipe swap replaces
+a dish with one that has entirely different per-100g macros and its own authored serving range, so
+the grams of **every item in that day** have to be re-optimised together: `recipe-balancer.ts` solves
+a day as a whole, not an item at a time.
+
+A swap therefore: substitutes the recipe → re-balances that day → rewrites each item's grams and the
+day's `achieved` → recomputes the plan's weekly average, `deviation` and `warnings`. No model is
+involved at any point; every gram still comes from the same deterministic balancer generation uses.
+
+`getSwapCandidates`/`swapPlanItem` **dispatch on which table the id belongs to**, so
+`swap-item-button.tsx` needs no change and no knowledge of which engine produced the plan.
+
+`recipe-swap.ts` holds the pure parts. `toBalanceableDay()` rebuilds a day for the balancer using
+each item's **own snapshot macros** rather than the live `recipes` row — a saved plan's numbers must
+not change because the CSV was re-ingested since — while taking the serving range from the live row,
+which is a property of the dish rather than of this plan. kcal is recomputed from the snapshots by
+Atwater so it can never disagree with the macros beside it. The swapped-in item is snapshotted from
+today's row, since it is being written today.
+
+Candidates are filtered exactly as generation filters its pool: diet type, cuisine (via
+`eligibleCuisinesFor`), season, client allergens re-derived **live** from the session answers (an
+allergy correction after generation must immediately narrow the picker), and the same
+"no zero-kcal rows" rule. Eligibility is re-checked server-side on the write, not trusted from the
+picker.
+
+The success toast deliberately does NOT say "macros unchanged" — true for an exchange swap, false
+here. Promising something untrue about a clinical number is worse than a vaguer message.
 
 ### Rollout
 

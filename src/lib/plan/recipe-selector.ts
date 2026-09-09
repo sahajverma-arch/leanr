@@ -18,6 +18,7 @@ import { buildRecipeIndex, groundSelection, type RecipeIndex } from "./recipe-gr
 import { balanceDayToTargets } from "./recipe-balancer"
 import { describeMacroProblems, isRecipeDayOffTarget, isRecipeWeekOffTarget, RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
 import { computeWeeklyAverage, pickBestWeek, weeklyDeviationScore } from "./recipe-week-score"
+import { buildRecipeWarnings, offTargetSummary } from "./recipe-warnings"
 import { blockingProblems, diagnoseDay } from "./recipe-day-diagnosis"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { findDaysNeedingVarietyRetry, findVarietyViolations, MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
@@ -197,69 +198,6 @@ async function runBestOfNPhase(
   return { days: best.days, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: candidates.length }
 }
 
-/**
- * The headline a dietitian reads first: which macros the chosen week misses,
- * by how much, and in which direction. Deliberately explicit about direction
- * — "12% under" and "12% over" call for opposite corrections, and a bare
- * percentage hides that.
- */
-function offTargetSummary(
-  weeklyAverage: RecipeAchievedMacros,
-  target: RecipeSelectorInput["dailyTarget"],
-  attempts: number
-): string {
-  const keys = [
-    ["kcal", "kcal"],
-    ["proteinG", "protein"],
-    ["carbsG", "carbs"],
-    ["fatG", "fat"],
-  ] as const
-  const misses = keys
-    .map(([key, label]) => {
-      const pct = ((weeklyAverage[key] - target[key]) / target[key]) * 100
-      return { label, pct }
-    })
-    .filter((m) => Math.abs(m.pct) > RECIPE_MACRO_TOLERANCE * 100)
-    .map((m) => `${m.label} ${Math.abs(m.pct).toFixed(0)}% ${m.pct > 0 ? "over" : "under"}`)
-
-  return (
-    `NEEDS DIETITIAN REVIEW — this is the closest of ${attempts} generated weeks, and its weekly ` +
-    `average is outside the ${(RECIPE_MACRO_TOLERANCE * 100).toFixed(0)}% tolerance on: ${misses.join(", ")}. ` +
-    `Every day is listed below; decide whether it is usable or regenerate.`
-  )
-}
-
-/**
- * Everything a dietitian should see about a best-of-N week that the
- * weekly-average gate does NOT reject it for. Nothing is hidden: per-day
- * macro misses, plausibility problems, variety breaches and serving-limit
- * hits all surface here, they simply do not block the write.
- */
-function bestOfNWarnings(
-  days: GroundedRecipeDay[],
-  input: RecipeSelectorInput,
-  constraints: ClientRecipeConstraints
-): string[] {
-  const warnings: string[] = []
-  const overused = new Set(findVarietyViolations(days).map((v) => v.name))
-
-  for (const day of days) {
-    for (const problem of describeMacroProblems(day.totals, input.dailyTarget)) {
-      warnings.push(`Day ${day.dayIndex}: ${problem}`)
-    }
-    for (const problem of describePlausibilityProblems(day, constraints)) {
-      warnings.push(`Day ${day.dayIndex}: ${problem}`)
-    }
-    if (day.cappedRecipeNames.length > 0) {
-      warnings.push(`Day ${day.dayIndex}: recipes hit their serving limit: ${day.cappedRecipeNames.join(", ")}`)
-    }
-  }
-  if (overused.size > 0) {
-    warnings.push(`Used more than ${MAX_RECIPE_REPEATS_PER_WEEK} times this week: ${[...overused].join(", ")}`)
-  }
-  return warnings
-}
-
 async function runWholeWeekPhase(
   input: RecipeSelectorInput,
   index: RecipeIndex,
@@ -378,9 +316,10 @@ export async function selectRecipes(
     // named per macro, persisted on the plan row and rendered on the plan
     // page — the dietitian decides whether it is usable, on the numbers,
     // instead of the engine deciding for them and discarding the work.
-    const warnings = bestOfNWarnings(days, input, constraints)
+    const warnings = buildRecipeWarnings(days, input.dailyTarget, constraints)
     if (offTarget) {
-      warnings.unshift(offTargetSummary(weeklyAverage, input.dailyTarget, attempts))
+      const summary = offTargetSummary(weeklyAverage, input.dailyTarget, attempts)
+      if (summary) warnings.unshift(summary)
     }
 
     return { selection: { days }, generationMode, modelUsed, attempts, warnings }
