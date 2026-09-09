@@ -501,10 +501,19 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
       })
       .returning({ id: dietPlans.id })
 
-    for (const day of days) {
-      const [dayRow] = await tx
-        .insert(dietPlanDays)
-        .values({
+    // Batched, not row-by-row. The original wrote 1 plan + 7 days + 35 meals
+    // + 35 item-inserts as ~79 SEQUENTIAL round trips inside one transaction —
+    // which cannot overlap by definition. Against a database in another
+    // region (this deployment: function in iad1, Postgres in ap-northeast-1)
+    // that is ~16s of pure latency, and was the dominant cost in a real 60s
+    // function timeout. Four statements now do the same work.
+    //
+    // Rows are matched back by NATURAL KEY (dayIndex, then dayId+slot), never
+    // by assuming multi-row RETURNING preserves insertion order.
+    const dayRows = await tx
+      .insert(dietPlanDays)
+      .values(
+        days.map((day) => ({
           dietPlanId: plan.id,
           dayIndex: day.dayIndex,
           date: toIsoDate(addDays(ctx.weekStartDate, day.dayIndex)),
@@ -515,30 +524,43 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
             fatG: day.totals.fatG,
             fibreG: day.totals.fiberG,
           },
-        })
-        .returning({ id: dietPlanDays.id })
+        }))
+      )
+      .returning({ id: dietPlanDays.id, dayIndex: dietPlanDays.dayIndex })
+    const dayIdByIndex = new Map(dayRows.map((r) => [r.dayIndex, r.id]))
 
-      for (const meal of day.meals) {
-        const slotOrder = ctx.slots.find((s) => s.slot === meal.slot)?.slotOrder ?? 0
-        const [mealRow] = await tx
+    const mealValues = days.flatMap((day) =>
+      day.meals.map((meal) => ({
+        dietPlanDayId: dayIdByIndex.get(day.dayIndex)!,
+        slot: meal.slot,
+        slotOrder: ctx.slots.find((s) => s.slot === meal.slot)?.slotOrder ?? 0,
+        archetypeId: null,
+      }))
+    )
+    const mealRows = mealValues.length
+      ? await tx
           .insert(dietPlanMeals)
-          .values({ dietPlanDayId: dayRow.id, slot: meal.slot, slotOrder, archetypeId: null })
-          .returning({ id: dietPlanMeals.id })
+          .values(mealValues)
+          .returning({ id: dietPlanMeals.id, dietPlanDayId: dietPlanMeals.dietPlanDayId, slot: dietPlanMeals.slot })
+      : []
+    const mealIdByDayAndSlot = new Map(mealRows.map((r) => [`${r.dietPlanDayId}:${r.slot}`, r.id]))
 
-        if (meal.items.length > 0) {
-          await tx.insert(dietPlanRecipeItems).values(
-            meal.items.map((item) => ({
-              dietPlanMealId: mealRow.id,
-              recipeId: item.recipe.id,
-              grams: item.grams,
-              proteinPer100GSnapshot: item.recipe.proteinPer100G,
-              carbsPer100GSnapshot: item.recipe.carbsPer100G,
-              fatPer100GSnapshot: item.recipe.fatPer100G,
-              fiberPer100GSnapshot: item.recipe.fiberPer100G,
-            }))
-          )
-        }
-      }
+    const itemValues = days.flatMap((day) =>
+      day.meals.flatMap((meal) => {
+        const mealId = mealIdByDayAndSlot.get(`${dayIdByIndex.get(day.dayIndex)}:${meal.slot}`)!
+        return meal.items.map((item) => ({
+          dietPlanMealId: mealId,
+          recipeId: item.recipe.id,
+          grams: item.grams,
+          proteinPer100GSnapshot: item.recipe.proteinPer100G,
+          carbsPer100GSnapshot: item.recipe.carbsPer100G,
+          fatPer100GSnapshot: item.recipe.fatPer100G,
+          fiberPer100GSnapshot: item.recipe.fiberPer100G,
+        }))
+      })
+    )
+    if (itemValues.length > 0) {
+      await tx.insert(dietPlanRecipeItems).values(itemValues)
     }
 
     if (runIds.length > 0) {
