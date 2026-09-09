@@ -48,16 +48,25 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v === "true"),
   // How many independent whole-week attempts the recipe engine makes before
-  // keeping the best (see CLAUDE.md "Best-of-N generation"). Default 3, set
-  // by a real deployment constraint rather than by quality alone: measured
-  // call latency is ~5-10s, so 5 attempts run ~45-50s end to end, which does
-  // not fit Vercel Hobby's 60s function ceiling with any safety margin.
-  // 3 runs ~30s. The retry path this replaces cost 19-22 calls and still
-  // rejected. 0 restores that original per-day-retry path, as an escape hatch.
+  // keeping the best (see CLAUDE.md "Best-of-N generation").
+  //
+  // Default 5, raised from 3 on a confirmed decision after real 422
+  // rejections in end-to-end testing. 3 was never a quality judgement — it
+  // was a Vercel Hobby workaround from when attempts ran SEQUENTIALLY against
+  // a 60s ceiling. Both constraints are gone: attempts run concurrently (one
+  // call's latency, not N) and maxDuration is 300. A measured best-of-5 run
+  // takes ~12s wall clock, the same as 3, and an earlier one had 2 of its 5
+  // candidates clear the gate outright.
+  //
+  // The cost is token pressure, not time: 5 concurrent ~14k-token requests on
+  // a low API rate tier. openai-client.ts's 25s per-call timeout bounds that
+  // — a throttled call drops one candidate rather than failing the request.
+  //
   // optionalBoundedInt, not z.coerce.number().default(): a BLANK value in a
-  // hosting dashboard must mean "not set" (3), never 0 — 0 is the escape
-  // hatch back to the old 19-22 call path. See env-schema-helpers.ts.
-  RECIPE_BEST_OF_N: optionalBoundedInt(3, 0, 10),
+  // hosting dashboard must mean "not set" (5), never 0 — 0 is the escape
+  // hatch back to the old 19-22 call per-day-retry path. See
+  // env-schema-helpers.ts.
+  RECIPE_BEST_OF_N: optionalBoundedInt(5, 0, 10),
 })
 
 const parsed = envSchema.safeParse({

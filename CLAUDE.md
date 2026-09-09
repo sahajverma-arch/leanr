@@ -1236,7 +1236,7 @@ could never be retried into compliance simply stopped being a gate.
 
 ### Best-of-N generation (2026-09-08) — the default path
 
-`RECIPE_BEST_OF_N` (env, **default 3**) makes `selectRecipes()` run N *independent* whole-week calls
+`RECIPE_BEST_OF_N` (env, **default 5**) makes `selectRecipes()` run N *independent* whole-week calls
 with **no day retries**, and keep the week closest to target on its **weekly average**. Setting it to
 `0` restores the original per-day-retry path, untouched, as an escape hatch.
 
@@ -1304,9 +1304,13 @@ and the causes were found one at a time, each hiding the next:
    self-inflicted. Now **300**: headroom, not an expectation, since the real bound is the 25s
    per-call timeout above.
 
-`RECIPE_BEST_OF_N` stays at **3** rather than 5: it is measurably enough (best-of-3 produced an
-accepted week at kcal 0.1% / protein 4.4% / carbs 1.7% / fat 1.0%), and it keeps concurrent token
-pressure lower on a new API key's rate tier. `attemptWholeWeek()` is shared by both paths so they
+`RECIPE_BEST_OF_N` is **5**, raised from 3 on a confirmed decision after real 422 rejections in
+local end-to-end testing. 3 was never a quality judgement — it was a Hobby-ceiling workaround from
+when attempts ran sequentially, and both constraints are gone (concurrent attempts cost one call's
+latency; `maxDuration` is 300). A measured best-of-5 run takes ~12s wall clock, the same as 3, and an
+earlier one had 2 of its 5 candidates clear the gate outright. The cost is token pressure rather than
+time — 5 concurrent ~14k-token requests on a low API rate tier — which the 25s per-call timeout
+bounds: a throttled call drops one candidate instead of failing the request. `attemptWholeWeek()` is shared by both paths so they
 cannot drift apart on how a week is built, and the deterministic fallback selector is still used, but
 only if *every* one of the N calls failed.
 
