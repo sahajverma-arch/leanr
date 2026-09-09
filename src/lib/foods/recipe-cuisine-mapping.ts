@@ -121,3 +121,19 @@ export const DEFAULT_TEMPLATE_REGION: (typeof REGIONS)[number] = "north_indian"
 export function templateRegionForCuisine(cuisine: RecipeCuisine): (typeof REGIONS)[number] {
   return CUISINE_TO_TEMPLATE_REGION[cuisine] ?? DEFAULT_TEMPLATE_REGION
 }
+
+/**
+ * The inverse: the cuisine a `region` corresponds to.
+ *
+ * Needed because the UI only ever sends `region` (the exchange engine's
+ * vocabulary), while the recipe engine speaks in cuisines. Any region with no
+ * cuisine of its own falls back to `"General"`, which is always eligible —
+ * the same graceful widening `eligibleCuisinesFor()` already performs, so a
+ * region can never resolve to an empty recipe pool.
+ */
+export function cuisineForTemplateRegion(region: (typeof REGIONS)[number]): RecipeCuisine {
+  for (const [cuisine, mapped] of Object.entries(CUISINE_TO_TEMPLATE_REGION) as [RecipeCuisine, (typeof REGIONS)[number]][]) {
+    if (mapped === region) return cuisine
+  }
+  return "General"
+}

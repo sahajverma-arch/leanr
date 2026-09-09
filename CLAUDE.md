@@ -1390,11 +1390,24 @@ feature, not implemented here.
 ### Rollout
 
 `RECIPE_ENGINE_ENABLED` defaults off everywhere. Both engines coexist in `route.ts`, gated by one
-`if` right after `weekTargets()`; the request body's `engine` field defaults to `"exchange"` when a
-caller omits it entirely, so both existing UI callers (`actions-bar.tsx`, `plan-actions-bar.tsx`) work
-byte-identically unchanged — a caller wanting the recipe engine must pass `engine: "recipe"` and
-`cuisine` explicitly, which no UI does yet (a real, open follow-up, not solved here). Flip the flag
-locally only once live-generation testing at the relaxed 8% tolerance shows consistent convergence.
+`if` right after `weekTargets()`.
+
+**The flag now actually selects the engine, and for a while it did not.** `requestSchema`'s preprocess
+originally hardcoded `engine: "exchange"` whenever a caller omitted the field — written when the
+recipe engine was new and flagged off, with the open follow-up noted that "no UI passes
+`engine: \"recipe\"` yet". The consequence was worse than a missing feature: `RECIPE_ENGINE_ENABLED`
+was set to `true` in production and **the exchange engine kept running**, because neither UI caller
+(`actions-bar.tsx`, `plan-actions-bar.tsx` — both send `{roadmapId, weekNumber, region}` and nothing
+else) ever asked for the recipe engine. Hours of production timeout investigation were spent against
+the *exchange* engine's `food-selector.ts` while assuming the recipe path was under test — the two are
+easy to confuse from a log, since food-selector also makes exactly 3 attempts. Caught by the user
+asking directly whether the wrong engine was running.
+
+With the flag on, an engine-less request is now a **recipe** request, and `cuisine` is derived from
+the `region` the UI already sends via `cuisineForTemplateRegion()` (the inverse of
+`CUISINE_TO_TEMPLATE_REGION`, falling back to `"General"`, which is always eligible, so a region can
+never resolve to an empty pool). An explicit `engine` in the body still wins, so either engine can
+be requested by name. With the flag off, behaviour is exactly as before.
 
 ## Dietitian knowledge layer
 

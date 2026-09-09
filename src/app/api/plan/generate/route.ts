@@ -40,7 +40,7 @@ import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { env } from "@/lib/env"
 import { REGIONS, SEASONS } from "@/lib/foods/vocab"
-import { eligibleCuisinesFor, RECIPE_CUISINES, templateRegionForCuisine, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
+import { cuisineForTemplateRegion, eligibleCuisinesFor, RECIPE_CUISINES, templateRegionForCuisine, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import {
   ClientProfileError,
   clientAllergensFromAnswers,
@@ -114,14 +114,33 @@ const recipeRequestSchema = z.object({
   season: z.enum(SEASONS).optional(),
 })
 
-// `engine` defaults to "exchange" when the caller omits it entirely — both
-// existing UI callers (actions-bar.tsx, plan-actions-bar.tsx) send
-// {roadmapId, weekNumber, region} with no `engine` field, and this keeps
-// them working byte-identically. A caller wanting the recipe engine must
-// pass `engine: "recipe"` and `cuisine` explicitly.
+// Which engine runs when the caller omits `engine` entirely — which both UI
+// callers do (actions-bar.tsx, plan-actions-bar.tsx send {roadmapId,
+// weekNumber, region} and nothing else).
+//
+// This used to hardcode "exchange", written when the recipe engine was new
+// and flagged off. The consequence was that RECIPE_ENGINE_ENABLED did not
+// actually do anything from the UI: the flag was set to true in production,
+// and the exchange engine kept running because no request ever asked for the
+// recipe engine. Every 504 investigated against that deployment was the
+// exchange engine's own food-selector, not the recipe path.
+//
+// The flag now means what it says. With it on, an engine-less request is a
+// RECIPE request, and `cuisine` is derived from the `region` the UI already
+// sends. An explicit `engine` in the body still wins, so a caller can always
+// ask for either by name.
 const requestSchema = z.preprocess((body) => {
   if (body && typeof body === "object" && !("engine" in (body as Record<string, unknown>))) {
-    return { ...(body as Record<string, unknown>), engine: "exchange" }
+    const raw = body as Record<string, unknown>
+    if (env.RECIPE_ENGINE_ENABLED) {
+      const parsedRegion = z.enum(REGIONS).safeParse(raw.region)
+      return {
+        ...raw,
+        engine: "recipe",
+        cuisine: parsedRegion.success ? cuisineForTemplateRegion(parsedRegion.data) : "General",
+      }
+    }
+    return { ...raw, engine: "exchange" }
   }
   return body
 }, z.discriminatedUnion("engine", [exchangeRequestSchema, recipeRequestSchema]))
