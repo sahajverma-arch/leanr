@@ -1285,12 +1285,28 @@ failed, because one macro was over 8%. Picking purely by mean can therefore choo
 over a *passing* one and reject the whole plan when an acceptable week was right there. It did not
 bite on that run only because the lowest-mean candidate happened to also pass.
 
-**Operational note — why the default is 3, not 5.** Measured call latency is ~5-10s, so 5 attempts run
-~45-50s end to end. Vercel **Hobby caps functions at 60s**, which leaves no real margin (a single slow
-call, or a cold start, times the request out *after* the OpenAI calls are already billed). 3 attempts
-run ~30s. `route.ts`'s `maxDuration` is **60** to match that ceiling; raise both together if the
-deployment moves to a plan with a longer one. This also fixes the constraint the retry path had:
-19-22 calls ran ~65-90s against a `maxDuration = 120` that itself required Vercel Pro. `attemptWholeWeek()` is shared by both paths so they
+**Operational note — the timeout story, and how it was actually resolved.** Measured call latency is
+~4-10s and a healthy best-of-3 run completes end to end in **7-12s** (verified locally against the
+real pipeline). Production nonetheless returned `FUNCTION_INVOCATION_TIMEOUT` at 60.1s three times,
+and the causes were found one at a time, each hiding the next:
+
+1. Attempts ran **sequentially** — N x latency instead of one call's latency. Fixed with `Promise.all`
+   (they are independent samples, not retries).
+2. The plan write ran **~79 sequential round trips** (row-by-row inserts) to a database on the other
+   side of the world. Batched to 4 statements.
+3. The function ran in `iad1` while Supabase is in `ap-northeast-1`. Fixed by setting the Vercel
+   function region to `sin1` — confirmed in a production log (`Routed to Singapore`).
+4. `openai-client.ts` used the SDK's **defaults: a 10-minute timeout and 2 automatic retries**, which
+   behind a 60s ceiling can only ever produce a 504. Now 25s per request and **zero** SDK retries —
+   best-of-N already is the retry mechanism, and a dropped call costs one candidate, not the request.
+5. `maxDuration` was **60**, chosen for Hobby's old ceiling — but a production log showed another
+   route reporting `663ms / 5m`, i.e. the platform allows 300s (Fluid compute). The last cap was
+   self-inflicted. Now **300**: headroom, not an expectation, since the real bound is the 25s
+   per-call timeout above.
+
+`RECIPE_BEST_OF_N` stays at **3** rather than 5: it is measurably enough (best-of-3 produced an
+accepted week at kcal 0.1% / protein 4.4% / carbs 1.7% / fat 1.0%), and it keeps concurrent token
+pressure lower on a new API key's rate tier. `attemptWholeWeek()` is shared by both paths so they
 cannot drift apart on how a week is built, and the deterministic fallback selector is still used, but
 only if *every* one of the N calls failed.
 

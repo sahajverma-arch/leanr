@@ -80,10 +80,19 @@ import { RateLimitExceededError, checkAndRecordPlanGenerationRequest } from "@/l
 import { isSameOrigin } from "@/lib/require-same-origin"
 
 export const runtime = "nodejs"
-// 60, not 120: Vercel Hobby caps functions at 60s. Best-of-3 runs ~30s end
-// to end (see env.ts RECIPE_BEST_OF_N), leaving a real margin. Raise both
-// together if the deployment moves to a plan with a longer ceiling.
-export const maxDuration = 60
+// This was 60 (chosen for Vercel Hobby's old 60s ceiling) and that cap was
+// self-inflicted: a real production log shows this account running another
+// route with "Execution Duration / Maximum: 663ms / 5m", i.e. the platform
+// allows 300s here (Fluid compute is active). Meanwhile /api/plan/generate
+// reported "1m / 1m" — hitting OUR limit, not the platform's, and returning
+// a 504 instead of a plan.
+//
+// 300 is headroom, not an expectation. The real budget is enforced where it
+// belongs: openai-client.ts bounds every model call at 25s with no SDK
+// retries, so best-of-3 costs ~25s worst case regardless of what the API
+// does, and a healthy run measures 7-12s end to end. This ceiling exists so
+// a slow-but-recoverable request finishes instead of being killed.
+export const maxDuration = 300
 
 const exchangeRequestSchema = z.object({
   engine: z.literal("exchange"),
