@@ -19,6 +19,7 @@ import { selectRecipes, RecipeSelectionRejectedError } from "../src/lib/plan/rec
 import { buildInitialMessages } from "../src/lib/plan/recipe-prompt"
 import type { ClientRecipeConstraints } from "../src/lib/plan/recipe-plausibility-validate"
 import type { DailyRecipeTarget, GroundedRecipeDay, MealSlotInfo, RecipeForPrompt, RecipeSelectorInput } from "../src/lib/plan/recipe-types"
+import { filterRecipePool } from "../src/lib/foods/recipe-pool-filters"
 import { seasonFor } from "../src/lib/plan/season"
 
 /** Prints every day's meals, grams and achieved macros. Used on BOTH the success and rejection paths — a rejected week is exactly the one worth reading. */
@@ -78,12 +79,24 @@ async function main() {
     .from(recipes)
     .where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisines)))
   const clientRecipeAllergenTags = clientRecipeAllergenTagsFromAnswers(session.answers as Answers)
-  const filtered = cuisineRows.filter(
-    (r) =>
-      r.dietTypes.includes(dietType) &&
-      (r.season === "all_year" || r.season === season) &&
-      !r.allergenTags.some((t) => clientRecipeAllergenTags.includes(t))
-  )
+  const dailyRecipeTarget: DailyRecipeTarget = {
+    kcal: dailyTarget.kcal,
+    proteinG: dailyTarget.proteinG,
+    carbsG: dailyTarget.carbsG,
+    fatG: dailyTarget.fatG,
+    fiberG: dailyTarget.fibreG,
+  }
+
+  // Same pool filters production applies (recipe-pool-filters.ts). Without
+  // this the script measured a 394-recipe pool where the real route uses 281,
+  // which makes every local run unrepresentative — a wrong instrument is
+  // worse than no instrument.
+  const filtered = filterRecipePool(cuisineRows.filter(
+      (r) =>
+        r.dietTypes.includes(dietType) &&
+        (r.season === "all_year" || r.season === season) &&
+        !r.allergenTags.some((t) => clientRecipeAllergenTags.includes(t))
+    ))
   console.log(`Eligible recipe pool: ${filtered.length} / ${cuisineRows.length} cuisine-matched / ${await db.$count(recipes)} total`)
 
   const eligibleRecipesForPrompt: RecipeForPrompt[] = filtered.map((r) => ({
@@ -115,14 +128,6 @@ async function main() {
         filtered.map((r) => r.id)
       )
     )
-
-  const dailyRecipeTarget: DailyRecipeTarget = {
-    kcal: dailyTarget.kcal,
-    proteinG: dailyTarget.proteinG,
-    carbsG: dailyTarget.carbsG,
-    fatG: dailyTarget.fatG,
-    fiberG: dailyTarget.fibreG,
-  }
 
   const input: RecipeSelectorInput = {
     cuisine,

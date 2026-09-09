@@ -342,7 +342,7 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
   // this client's own macro split, before the model ever sees the pool.
   // See recipe-pool-filters.ts for the real rejected week that motivated
   // both. The fat filter declines to narrow rather than starve the pool.
-  const filtered = filterRecipePool(eligible, ctx.dailyTarget)
+  const filtered = filterRecipePool(eligible)
 
   if (filtered.length === 0) {
     return NextResponse.json(

@@ -87,7 +87,7 @@ export async function buildRecipeRunContext(
   )
   // Same pool filters the production route applies, so a script run stays
   // comparable to a real generation.
-  const filtered = filterRecipePool(eligible, dailyTarget)
+  const filtered = filterRecipePool(eligible)
 
   const eligibleRecipesForPrompt: RecipeForPrompt[] = filtered.map((r) => ({
     id: r.id,

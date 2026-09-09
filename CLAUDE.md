@@ -1294,40 +1294,45 @@ deployment moves to a plan with a longer one. This also fixes the constraint the
 cannot drift apart on how a week is built, and the deterministic fallback selector is still used, but
 only if *every* one of the N calls failed.
 
-### Recipe pool filters — nutritionally-empty rows and fat-share fit
+### Recipe pool filter — nutritionally-empty rows
 
 `recipe-pool-filters.ts`, applied in `route.ts` (and the dev tools' shared input builder) *before the
-model sees the pool*. Both filters came from inspecting a real rejected week, not from theory.
+model sees the pool*. ONE filter, found by inspecting a real rejected week.
 
-**1. Nutritionally-empty rows (`isNutritionallyEmpty`).** A row claiming to be food while declaring
-0 kcal is dropped. Two kinds were being plated to dietitians: the placeholders `Any Veg` and
-`Any Veg (W/O Aloo, Arbi, Paneer, Soy)` — served as "Any Veg (150 g)" on three days of a real plan —
-and, worse, genuinely mis-ingested foods (`Watermelon`, `Moong Dal Idli`, `Kandi Pachadi` all at
-0 kcal). The second kind is more damaging than a placeholder: the balancer will happily assign 250 g
-of a zero-macro idli, so the day's arithmetic still "adds up" while the client is told to eat
-something the plan does not count. Deliberately **not** a blanket "0 kcal is invalid" rule —
-`Lukewarm Water`, `Apple Cider Vinegar` and the green teas are legitimately 0 and stay eligible,
-gated by a small `ZERO_KCAL_PLAUSIBLE_CATEGORIES` set (Morning Water / Bedtime Water / Tea).
-
-**2. Fat-share fit (`filterByFatShare`).** A recipe whose fat share of calories exceeds the *client's
-own* target share by more than `FAT_SHARE_HEADROOM` (1.5x) is dropped. **The pool was never the
-problem** — profiled across the 1007 General + North Indian recipes, its median fat share is 25%,
-exactly the rejected client's target. *Selection* was: the chosen dishes averaged **47% of calories
-from fat** while carbs ran under on 5 of 7 days, and nearly every dish sat pinned at a serving bound.
-That pinning is the tell — `recipe-balancer.ts` can only scale grams, so once a day's dish set sits
-at 47% fat, no gram assignment reaches 25% and every item hits its limit trying. Measured effect on a
-real client (Aadi, TEST-004): pool 394 -> 281, median fat share 25% -> 16%, worst-case 95% -> 40%.
-
-Both degrade gracefully, the same pattern used throughout the exchange engine's selectors: the fat
-filter abandons itself entirely if it would leave fewer than `MIN_POOL_AFTER_FAT_FILTER` (150)
-recipes, and it narrows almost nothing for a genuinely high-fat prescription (a keto-style target's
-own share is already high, so little exceeds 1.5x it). Neither filter invents or edits a nutrition
-figure; each only decides whether a row may be offered.
+A row claiming to be food while declaring 0 kcal is dropped. Two kinds were being plated to
+dietitians: the placeholders `Any Veg` and `Any Veg (W/O Aloo, Arbi, Paneer, Soy)` — served as
+"Any Veg (150 g)" on three days of a real plan — and, worse, genuinely mis-ingested foods
+(`Watermelon`, `Moong Dal Idli`, `Kandi Pachadi` all at 0 kcal). The second kind is more damaging
+than a placeholder: the balancer will happily assign 250 g of a zero-macro idli, so the day's
+arithmetic still "adds up" while the client is told to eat something the plan does not count.
+Deliberately **not** a blanket "0 kcal is invalid" rule — `Lukewarm Water`, `Apple Cider Vinegar` and
+the green teas are legitimately 0 and stay eligible, gated by a small
+`ZERO_KCAL_PLAUSIBLE_CATEGORIES` set (Morning Water / Bedtime Water / Tea).
 
 Applied at **eligibility time**, not as an `is_active` flag written at ingestion — deliberately.
-These are code, so they take effect with no reseed and a later `npm run seed:recipes` cannot silently
-undo them, which is exactly the failure mode recorded above for the Milk/`milk_cow` `mealSlots`
+It is code, so it takes effect with no reseed and a later `npm run seed:recipes` cannot silently
+undo it, which is exactly the failure mode recorded above for the Milk/`milk_cow` `mealSlots`
 regression.
+
+**A second filter was added here, measured, and REMOVED — recorded so it is not reinvented.** It
+dropped recipes whose fat share of calories exceeded the client's own target share by some factor.
+Measured against a real client (Aadi, TEST-004) over three live runs it made convergence
+monotonically worse and never better:
+
+| fat headroom | pool | weekly deviation | result |
+|---|---|---|---|
+| 1.5x | 281 | 13.0% | REJECTED |
+| 2.5x | 363 | 5.0% | REJECTED |
+| removed | 392 | worst macro 4.4% | **ACCEPTED** |
+
+The premise was simply wrong. The pool does not skew fatty — its median fat share is **23% against a
+27% target**, already under. Removing calorie-dense recipes only made the fat target harder to
+reach, and fat then ran UNDER on every day (14-49%) instead of over. The observation that motivated
+the filter was real — a rejected week ran fat over on all 7 days with nearly every dish pinned at a
+serving bound, and `recipe-balancer.ts` can only scale grams, never fix a dish set's ratio — but that
+is a **selection** problem, which dishes the model picks out of a balanced pool. It has to be fixed
+where it happens (the prompt, or a check on the chosen set). Narrowing the pool to compensate treated
+the symptom and broke what was working. **Over-fat selection remains open.**
 
 ### Fiber — soft target, still logged
 
