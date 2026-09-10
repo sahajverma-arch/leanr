@@ -54,6 +54,7 @@ import {
 import { buildRecipeGuidelines } from "./recipe-guidelines"
 import { recipeItemToPlanViewItem } from "./recipe-view-adapter"
 import { TABLE_4_1, ZERO_COUNTS, type ExchangeCode, type ExchangeCounts } from "./table-4-1"
+import { describeSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 
 export { CATEGORY_LABEL } from "./plan-guidelines"
 export type { GuidelineBullet, PlanViewDay, PlanViewItem, PlanViewMeal, WeeklySummaryRow } from "./plan-guidelines"
@@ -93,6 +94,8 @@ export interface PlanViewModel {
   deviationPct: { kcal: number; proteinG: number; fatG: number; carbsG: number }
   /** Generation warnings recorded on the plan row. Empty when the plan was a clean pass, or predates the column. */
   warnings: string[]
+  /** One line describing the prescribed supplement, or null. Snapshotted on the plan, never a live lookup. */
+  supplementLine: string | null
   days: PlanViewDay[]
   weeklySummary: WeeklySummaryRow[]
   weeklyAvg: WeeklySummaryRow
@@ -445,6 +448,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
     targets,
     deviationPct,
     warnings: (plan.warnings as string[] | null) ?? [],
+    supplementLine: plan.supplement ? describeSupplement(plan.supplement as PrescribedSupplement) : null,
     days,
     weeklySummary,
     weeklyAvg,

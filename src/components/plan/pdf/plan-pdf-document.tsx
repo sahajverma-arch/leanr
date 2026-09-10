@@ -21,6 +21,9 @@ const COLORS = { protein: "#facc15", carbs: "#38bdf8", fat: "#f97316" }
 const styles = StyleSheet.create({
   page: { padding: 28, fontSize: 9, fontFamily: "Helvetica", color: "#111827" },
   header: { backgroundColor: "#0a0a0a", color: "#ffffff", borderRadius: 8, padding: 14, marginBottom: 10 },
+  supplementBox: { borderWidth: 1.5, borderColor: "#047857", backgroundColor: "#ecfdf5", borderRadius: 6, padding: 8, marginBottom: 10 },
+  supplementTitle: { fontSize: 8, fontFamily: "Helvetica-Bold", color: "#047857" },
+  supplementBody: { fontSize: 8.5, color: "#064e3b", marginTop: 2, lineHeight: 1.35 },
   headerRow: { flexDirection: "row", justifyContent: "space-between" },
   headerLeft: { flex: 1, paddingRight: 10 },
   h1: { fontSize: 16, fontFamily: "Helvetica-Bold" },
@@ -114,7 +117,7 @@ function MacroDonutPdf({ proteinG, carbsG, fatG }: { proteinG: number; carbsG: n
 }
 
 export function PlanPdfDocument({ model }: { model: PlanViewModel }) {
-  const { plan, client, roadmap, targets, deviationPct, days, weeklySummary, weeklyAvg, guidelines, foodsToAvoid, narrative } = model
+  const { plan, client, roadmap, targets, deviationPct, days, weeklySummary, weeklyAvg, guidelines, foodsToAvoid, narrative, supplementLine } = model
   const worstDeviation = Math.max(
     Math.abs(deviationPct.kcal),
     Math.abs(deviationPct.proteinG),
@@ -146,6 +149,18 @@ export function PlanPdfDocument({ model }: { model: PlanViewModel }) {
             </View>
           </View>
         </View>
+
+        {/* Prescribed supplement — printed above the week, because it is the
+            one part of the day the plan does not cook. */}
+        {supplementLine ? (
+          <View style={styles.supplementBox}>
+            <Text style={styles.supplementTitle}>SUPPLEMENT</Text>
+            <Text style={styles.supplementBody}>{supplementLine}</Text>
+            <Text style={styles.supplementBody}>
+              The meals below supply the rest of the day&apos;s target. Take this in addition to the food.
+            </Text>
+          </View>
+        ) : null}
 
         <View style={styles.tiles}>
           <StatTile label="Avg Daily Calories" value={`${formatKcal(weeklyAvg.kcal)} kcal`} />

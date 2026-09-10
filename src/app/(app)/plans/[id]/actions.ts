@@ -12,6 +12,7 @@ import { clientAllergensFromAnswers, clientDislikesFromAnswers } from "@/lib/pla
 import { filterEligibleFoods, type EligibilityCriteria } from "@/lib/plan/eligible-foods"
 import { and, inArray } from "drizzle-orm"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
+import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 import { clientRecipeAllergenTagsFromAnswers } from "@/lib/plan/client-profile-from-answers"
 import { eligibleCuisinesFor, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import { RECIPE_PIPELINE_COLUMNS, type DailyRecipeTarget } from "@/lib/plan/recipe-types"
@@ -193,13 +194,19 @@ async function loadRecipeItemContext(itemId: string) {
   // `region` carries the cuisine string for recipe-engine plans — the same
   // column reuse generation made (see CLAUDE.md "The recipe engine").
   const cuisine = row.plan.region as RecipeCuisine
+  // The FOOD target, not the prescribed one — a swap re-balances the day, so
+  // it must aim at exactly what generation aimed at. Read from the plan's OWN
+  // snapshot rather than the live roadmap_supplements row: editing the
+  // prescription later must not silently re-balance a plan that was built
+  // before the change.
   const wt = weekTargets(roadmapRow.output as RoadmapResult, row.plan.weekNumber)
+  const { food } = foodTargetsAfterSupplement(wt, (row.plan.supplement as PrescribedSupplement | null) ?? null)
   const target: DailyRecipeTarget = {
-    kcal: wt.kcal,
-    proteinG: wt.proteinG,
-    carbsG: wt.carbsG,
-    fatG: wt.fatG,
-    fiberG: wt.fibreG,
+    kcal: food.kcal,
+    proteinG: food.proteinG,
+    carbsG: food.carbsG,
+    fatG: food.fatG,
+    fiberG: food.fibreG,
   }
 
   return {

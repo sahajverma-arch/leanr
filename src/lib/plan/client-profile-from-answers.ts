@@ -90,6 +90,29 @@ export function dietTypeFromAnswers(answers: Answers): DietType {
 }
 
 /** Only "Allergy — never serve" classifications hard-exclude; "Intolerance" is a softer signal handled elsewhere, not a food filter. */
+/**
+ * Whether this client can be prescribed a protein supplement at all.
+ *
+ * "Protein powder" is one of q27's own allergy/intolerance options, and q27's
+ * note draws the distinction the plan must respect: "An allergen never
+ * appears in any meal, in any form; a trigger food is reduced, timed
+ * differently or retested smaller." So an allergy blocks the prescription
+ * outright, while an intolerance is the dietitian's judgement to make — it
+ * warns rather than refuses.
+ *
+ * Read live from the session's current answers, never snapshotted: a
+ * correction made after counselling has to take effect immediately, exactly
+ * as the swap picker's own allergen check already does.
+ */
+export type ProteinPowderRestriction = "allergy" | "intolerance" | null
+
+export function proteinPowderRestriction(answers: Answers): ProteinPowderRestriction {
+  const reported = answers.q27
+  const listed = Array.isArray(reported) && reported.some((l) => l === "Protein powder")
+  if (!listed) return null
+  return answers.q27_protein_powder_type === "Allergy — never serve" ? "allergy" : "intolerance"
+}
+
 export function clientAllergensFromAnswers(answers: Answers): string[] {
   const reported = answers.q27
   const labels = Array.isArray(reported) ? reported.filter((l): l is string => typeof l === "string") : []

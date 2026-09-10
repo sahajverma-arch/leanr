@@ -27,6 +27,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
     targets,
     deviationPct,
     warnings,
+    supplementLine,
     days,
     weeklySummary,
     weeklyAvg,
@@ -63,6 +64,19 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* Prescribed supplement. Above everything, because it is the one part
+          of the day the plan does not cook — the client has to be told to
+          take it, and the day's protein only adds up if they do. */}
+      {supplementLine && (
+        <div className="rounded-xl border-2 border-emerald-600 bg-emerald-50 p-4 text-emerald-950">
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Supplement</h2>
+          <p className="mt-1 text-sm">{supplementLine}</p>
+          <p className="mt-1 text-xs">
+            The meals below are built to supply the REST of the day&apos;s target. Take this in addition to the food.
+          </p>
         </div>
       )}
 

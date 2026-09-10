@@ -74,6 +74,44 @@ export const roadmapOverrides = pgTable("roadmap_overrides", {
 export type RoadmapOverride = typeof roadmapOverrides.$inferSelect
 export type NewRoadmapOverride = typeof roadmapOverrides.$inferInsert
 
+/**
+ * A protein supplement the dietitian prescribes at review time, before the
+ * plan is generated. Its protein and calories are subtracted from what the
+ * FOOD has to supply — see supplement-adjusted-targets.ts.
+ *
+ * Attached to the roadmap and never mutating it, exactly like
+ * roadmapOverrides above: this is a clinical decision made while reviewing,
+ * not a recalculation of the roadmap itself.
+ *
+ * ONE row per roadmap (enforced by a unique index, not just convention) —
+ * confirmed scope is exactly one protein supplement per client.
+ */
+export const roadmapSupplements = pgTable("roadmap_supplements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  roadmapId: uuid("roadmap_id")
+    .notNull()
+    .unique()
+    .references(() => roadmaps.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  /** How one serving is described to the client — "1 scoop", "1 sachet". */
+  servingLabel: text("serving_label").notNull(),
+  servingsPerDay: numeric("servings_per_day", { mode: "number" }).notNull(),
+  /**
+   * Per SERVING, off the tub's label. Confirmed scope: protein and calories
+   * only. Carbs and fat are not entered — the scoop's non-protein calories
+   * still reach the plan, via the carbs residual in weekTargets()'s own
+   * formula. See supplement-adjusted-targets.ts.
+   */
+  proteinGPerServing: numeric("protein_g_per_serving", { mode: "number" }).notNull(),
+  kcalPerServing: numeric("kcal_per_serving", { mode: "number" }).notNull(),
+  createdBy: uuid("created_by").references(() => profiles.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+export type RoadmapSupplement = typeof roadmapSupplements.$inferSelect
+export type NewRoadmapSupplement = typeof roadmapSupplements.$inferInsert
+
 /** Table 4.1 — Comprehensive Food Exchange List (11 rows). READ-ONLY at runtime. See CLAUDE.md "The exchange system". */
 export const exchangeTypes = pgTable("exchange_types", {
   code: text("code").primaryKey(),
@@ -297,6 +335,13 @@ export const dietPlans = pgTable("diet_plans", {
   targets: jsonb("targets").notNull(),
   achieved: jsonb("achieved").notNull(),
   deviation: jsonb("deviation").notNull(),
+  // The supplement in force when this plan was generated, snapshotted as
+  // {name, servingLabel, servingsPerDay, proteinGPerServing, kcalPerServing}.
+  // NOT a live join to roadmap_supplements: editing or removing the
+  // prescription later must never retroactively change what an approved plan
+  // told the client to take, the same reasoning diet_plan_recipe_items'
+  // macro snapshots already follow. Null = none prescribed.
+  supplement: jsonb("supplement"),
   // Every reason this plan is not a clean pass, as a string[]: per-day macro
   // misses, plausibility problems, variety breaches, serving-limit hits.
   // Nullable so every historical row backfills as "nothing recorded" rather

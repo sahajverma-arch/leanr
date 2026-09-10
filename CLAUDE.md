@@ -1814,6 +1814,51 @@ anything. Flip locally only once the initial content has had a real dietitian re
 A/B convergence comparison (see the token-budget risk above) shows this layer doesn't make an already
 convergence-fragile 8B model worse.
 
+## Prescribed protein supplement
+
+A client told to take a scoop of whey is getting protein the plan does not cook. If the recipes are
+still solved against the full protein target, the client eats a whole day of food protein **plus**
+the scoop — over target every day, invisibly. So the supplement is subtracted first and the plan is
+built to fill only the remainder.
+
+**Where it is entered.** The review page, before generation — `roadmap_supplements`, one row per
+roadmap (a unique constraint, not a convention), attached to the roadmap and never mutating it. That
+is the same shape `roadmap_overrides` already uses for a dietitian's review-time decision. The
+dietitian types what is on the tub: name, what one serving is ("1 scoop"), servings per day, protein
+per serving, kcal per serving. The next-4-weeks targets table on that same page then shows both
+figures — "49 g **of** 73 g" — so the split is visible before a plan exists.
+
+**Confirmed scope (all four settled explicitly):** protein and calories only; every day of the week;
+one banner at the top of the plan and the PDF; exactly one supplement per client.
+
+**Carbs are not entered, and are not ignored either.** `weekTargets()` derives carbs as the residual
+`(kcal - protein*4 - fat*9) / 4`, so `foodTargetsAfterSupplement()` recomputes carbs the same way
+after subtracting protein and kcal — a 120 kcal / 24 g scoop is 96 kcal of protein, and the leftover
+24 kcal comes out of carbs automatically (~6 g). Subtracting protein and kcal while leaving carbs at
+their original value would leave the target internally inconsistent — kcal would no longer equal its
+own macros — and `recipe-balancer.ts` optimises all of them simultaneously, so it would be chasing a
+combination that cannot exist.
+
+**Every consumer of `weekTargets()` had to be updated, and one of them is easy to miss.** There are
+four: generation (`route.ts`), the review page, `seed-demo-clients.ts`, and — the subtle one — the
+**recipe swap** in `plans/[id]/actions.ts`. A swap re-balances a whole day, so if it aimed at the
+unadjusted target the first swap would silently undo the entire feature.
+
+**Snapshot discipline, twice over.** `diet_plans.supplement` stores the prescription as it stood at
+generation, and the swap path reads *that*, not the live `roadmap_supplements` row — editing or
+removing a prescription later must never retroactively change what an approved plan told the client
+to take, exactly as `diet_plan_recipe_items`' macro snapshots already guarantee for recipes.
+
+**Allergy is a hard block; intolerance is not.** "Protein powder" is one of `q27`'s own options, and
+that question's note draws the line the plan must respect: an allergen "never appears in any meal, in
+any form", while a trigger food is "reduced, timed differently or retested smaller". So
+`proteinPowderRestriction()` refuses the prescription outright for `"Allergy — never serve"` and only
+warns for an intolerance — the dietitian's judgement to make. Read live from the session's current
+answers, never snapshotted, so a correction takes effect immediately.
+
+**THE ONE RULE is untouched.** These are dietitian-entered figures off a product label. The LLM never
+sees them, never proposes them, and simply composes recipes against a smaller protein number.
+
 ## Rounding & precision
 - All intermediate maths unrounded. Round only at display.
 - kcal, protein/carb/fat grams → integer at display.

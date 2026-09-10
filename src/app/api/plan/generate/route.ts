@@ -32,11 +32,13 @@ import {
   recipes,
   roadmapOverrides,
   roadmaps,
+  roadmapSupplements,
   vegetableDishCombinationMembers,
   vegetableDishCombinations,
 } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
+import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { env } from "@/lib/env"
 import { REGIONS, SEASONS } from "@/lib/foods/vocab"
@@ -298,6 +300,8 @@ interface RecipeEngineContext {
   weekEndDate: Date
   season: string
   dailyTarget: DailyRecipeTarget
+  /** Snapshotted onto the plan so a later edit to the prescription cannot rewrite history. */
+  supplement: PrescribedSupplement | null
   dietType: ReturnType<typeof dietTypeFromAnswers>
   clientRecipeAllergenTags: string[]
   /** Dietitian Knowledge RAG layer (gated by DIETITIAN_KNOWLEDGE_ENABLED) — empty when off or nothing retrieved. See CLAUDE.md "Dietitian knowledge layer". */
@@ -540,6 +544,7 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
         // week rather than rejecting, so the dietitian needs to see what is
         // off when they open the plan — not only in the response to the
         // click that generated it.
+        supplement: ctx.supplement,
         warnings: selectionResult.warnings,
         preparedBy: ctx.user.id,
         status: "draft",
@@ -724,7 +729,33 @@ export async function POST(request: Request) {
     )
   }
 
-  const dailyTarget = weekTargets(roadmapOutput, weekNumber)
+  // The prescribed clinical target, then what the FOOD must actually supply
+  // once a prescribed protein supplement is subtracted. Everything downstream
+  // — both engines, the balancer, the tolerance gate, the stored deviations —
+  // uses the FOOD figure, because that is what the recipes are being asked to
+  // provide. See supplement-adjusted-targets.ts.
+  const prescribedTarget = weekTargets(roadmapOutput, weekNumber)
+  const [supplementRow] = await db
+    .select()
+    .from(roadmapSupplements)
+    .where(eq(roadmapSupplements.roadmapId, roadmapId))
+    .limit(1)
+  const prescribedSupplement: PrescribedSupplement | null = supplementRow
+    ? {
+        name: supplementRow.name,
+        servingLabel: supplementRow.servingLabel,
+        servingsPerDay: supplementRow.servingsPerDay,
+        proteinGPerServing: supplementRow.proteinGPerServing,
+        kcalPerServing: supplementRow.kcalPerServing,
+      }
+    : null
+  const { food: dailyTarget, warnings: supplementWarnings } = foodTargetsAfterSupplement(
+    prescribedTarget,
+    prescribedSupplement
+  )
+  if (supplementWarnings.length > 0) {
+    console.warn(`[plan/generate] supplement warnings: ${supplementWarnings.join(" | ")}`)
+  }
 
   let dietType
   try {
@@ -862,6 +893,7 @@ export async function POST(request: Request) {
       weekNumber,
       cuisine,
       mealCount,
+      supplement: prescribedSupplement,
       clientId: client.id,
       slots,
       weekStartDate,

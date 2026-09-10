@@ -3,8 +3,8 @@ import { notFound } from "next/navigation"
 import Link from "next/link"
 
 import { db } from "@/db"
-import { clients, counsellingSessions, mealTemplates, roadmapOverrides, roadmaps } from "@/db/schema"
-import { regionFromAnswers } from "@/lib/plan/client-profile-from-answers"
+import { clients, counsellingSessions, mealTemplates, roadmapOverrides, roadmapSupplements, roadmaps } from "@/db/schema"
+import { proteinPowderRestriction, regionFromAnswers } from "@/lib/plan/client-profile-from-answers"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { CalcCard } from "@/components/review/calc-card"
@@ -13,9 +13,11 @@ import { ProteinRampTable } from "@/components/review/protein-ramp-table"
 import { FlagsPanel } from "@/components/review/flags-panel"
 import { ActionsBar } from "@/components/review/actions-bar"
 import { OverrideDialog } from "@/components/review/override-dialog"
+import { SupplementCard } from "@/components/review/supplement-card"
 import type { Answers } from "@/lib/counselling/questions"
 import type { RoadmapInput, RoadmapResult } from "@/lib/counselling/roadmap"
 import { weekTargets } from "@/lib/counselling/roadmap"
+import { describeSupplement, foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 import { formatBmi, formatDivisor, formatGrams, formatKcal, formatWeight } from "@/lib/format"
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -71,6 +73,21 @@ export default async function ReviewPage({
     .where(eq(roadmapOverrides.roadmapId, roadmapRow.id))
   const overriddenCodes = new Set(overrides.map((o) => o.flagCode))
 
+  const [supplementRow] = await db
+    .select()
+    .from(roadmapSupplements)
+    .where(eq(roadmapSupplements.roadmapId, roadmapRow.id))
+    .limit(1)
+  const supplement: PrescribedSupplement | null = supplementRow
+    ? {
+        name: supplementRow.name,
+        servingLabel: supplementRow.servingLabel,
+        servingsPerDay: supplementRow.servingsPerDay,
+        proteinGPerServing: supplementRow.proteinGPerServing,
+        kcalPerServing: supplementRow.kcalPerServing,
+      }
+    : null
+
   // Which regions can actually be generated for is a runtime DB fact (which
   // meal_templates rows exist), not a hardcoded list — so this can never
   // drift out of sync with what's actually been seeded (see the actions-bar
@@ -92,10 +109,15 @@ export default async function ReviewPage({
   const WEEKS_AHEAD = 4
   // weekTargets() already resolves any week against output.phases/proteinRamp
   // — no engine change needed, this was a pure review-page gap.
-  const upcomingWeeks = Array.from({ length: WEEKS_AHEAD }, (_, i) => ({
-    week: i + 1,
-    targets: weekTargets(output, i + 1),
-  }))
+  // Both figures, deliberately: the prescribed target is the clinical number,
+  // and `food` is what the recipes will actually be solved against once the
+  // supplement is subtracted. Showing only one of them would hide either the
+  // prescription or what the plan is really being built to.
+  const upcomingWeeks = Array.from({ length: WEEKS_AHEAD }, (_, i) => {
+    const prescribed = weekTargets(output, i + 1)
+    return { week: i + 1, prescribed, ...foodTargetsAfterSupplement(prescribed, supplement) }
+  })
+  const supplementWarnings = upcomingWeeks[0]?.warnings ?? []
 
   return (
     <div className="mx-auto max-w-3xl space-y-8 pb-16 print:max-w-full">
@@ -267,9 +289,33 @@ export default async function ReviewPage({
       </section>
 
       {/* 7. Next 4 weeks vs projection */}
+      {/* Protein supplement — prescribed here, BEFORE generation, because it
+          changes what the food has to supply. The targets table directly
+          below shows the result. */}
+      <section>
+        <h2 className="mb-3 font-serif text-lg font-semibold">Protein supplement</h2>
+        <SupplementCard
+          roadmapId={roadmapRow.id}
+          sessionId={session.id}
+          current={supplement}
+          restriction={proteinPowderRestriction(answers)}
+        />
+        {supplement && (
+          <p className="mt-2 text-sm text-muted-foreground">{describeSupplement(supplement)}</p>
+        )}
+        {supplementWarnings.length > 0 && (
+          <ul className="mt-2 space-y-1 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+            {supplementWarnings.map((w, n) => (
+              <li key={n}>• {w}</li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       <section>
         <h2 className="mb-3 font-serif text-lg font-semibold">
           Next {WEEKS_AHEAD} weeks vs. {output.projection.label.toLowerCase()}
+          {supplement ? " — kcal and protein show what the FOOD must supply, of the full prescribed target" : ""}
         </h2>
         <Card>
           <CardContent className="pt-6">
@@ -284,13 +330,23 @@ export default async function ReviewPage({
                 </tr>
               </thead>
               <tbody className="tabular-nums">
-                {upcomingWeeks.map(({ week, targets }) => (
+                {upcomingWeeks.map(({ week, prescribed, food }) => (
                   <tr key={week} className="border-b">
                     <td className="py-1.5 font-medium">Week {week}</td>
-                    <td>{formatKcal(targets.kcal)}</td>
-                    <td>{formatGrams(targets.proteinG)} g</td>
-                    <td>{formatGrams(targets.fatG)} g</td>
-                    <td>{formatGrams(targets.carbsG)} g</td>
+                    <td>
+                      {formatKcal(food.kcal)}
+                      {supplement && (
+                        <span className="text-muted-foreground"> of {formatKcal(prescribed.kcal)}</span>
+                      )}
+                    </td>
+                    <td>
+                      {formatGrams(food.proteinG)} g
+                      {supplement && (
+                        <span className="text-muted-foreground"> of {formatGrams(prescribed.proteinG)} g</span>
+                      )}
+                    </td>
+                    <td>{formatGrams(food.fatG)} g</td>
+                    <td>{formatGrams(food.carbsG)} g</td>
                   </tr>
                 ))}
                 <tr>
