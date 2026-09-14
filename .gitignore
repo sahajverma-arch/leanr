@@ -41,3 +41,6 @@ supabase/.temp/
 # generated plan output from scripts/compose-plan.ts + render-plan-pdf.tsx (dev tools)
 /*.pdf
 /*.html
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat

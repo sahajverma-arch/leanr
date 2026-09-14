@@ -26,6 +26,7 @@ import {
 } from "@/lib/plan/recipe-quantity-step"
 import type { PlanViewItem, RecipeItemEditing } from "@/lib/plan/plan-view-model"
 
+import { RecipeCandidateList } from "./recipe-candidate-list"
 import { SwapItemButton } from "./swap-item-button"
 
 /**
@@ -239,36 +240,14 @@ function RecipeItemEditDialog({
           </TabsContent>
 
           <TabsContent value="swap" className="pt-3">
-            <div className="max-h-72 space-y-1 overflow-y-auto">
-              {candidates === null ? (
-                <p className="py-4 text-center text-sm text-muted-foreground">Loading eligible dishes…</p>
-              ) : candidates.length === 0 ? (
-                <p className="py-4 text-center text-sm text-muted-foreground">
-                  No other eligible dishes for this client.
-                </p>
-              ) : (
-                candidates.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    disabled={isPending}
-                    onClick={() =>
-                      run(() => swapPlanItem(item.id, c.id), "Swapped — quantities recomputed. Check the macros above.")
-                    }
-                    className="w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50"
-                  >
-                    <span className="block">{c.nameEn}</span>
-                    {c.preview && (
-                      <span className="block text-xs text-muted-foreground">
-                        {formatGrams(c.preview.grams)} g · {formatKcal(c.preview.kcal)} kcal · P{" "}
-                        {formatGrams(c.preview.proteinG)}g · C {formatGrams(c.preview.carbsG)}g · F{" "}
-                        {formatGrams(c.preview.fatG)}g
-                      </span>
-                    )}
-                  </button>
-                ))
-              )}
-            </div>
+            <RecipeCandidateList
+              candidates={candidates}
+              disabled={isPending}
+              onPick={(recipeId) =>
+                run(() => swapPlanItem(item.id, recipeId), "Swapped — quantities recomputed. Check the macros above.")
+              }
+              emptyMessage="No other eligible dishes for this client."
+            />
           </TabsContent>
 
           <TabsContent value="remove" className="space-y-3 pt-3">

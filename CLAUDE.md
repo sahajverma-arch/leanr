@@ -1512,6 +1512,35 @@ on the write, never trusted from whatever the picker last showed.
 inheriting the replaced dish's grams, which could sit far outside its serving range, and any lock is
 cleared — the quantity a dietitian chose was for a different dish.
 
+**Finding a dish in a thousand-row pool — search and macro filters.** A real eligible pool is ~1000
+dishes, so an alphabetical list is not a way to find anything. `RecipeCandidateList` is shared by the
+swap tab and the add dialog (they are the same problem, and sharing it stops them drifting): a name
+search, plus chips for **High protein** and **High carb** carrying the live count of how many of
+*this client's* eligible dishes qualify. Ticking both is **OR, not AND** — a dietitian ticking both
+is widening the search, and only 7 rows in the whole table are both, so intersecting would read as a
+broken filter. Filtering is presentational: it narrows what is OFFERED, never what is eligible, which
+stays server-side and is re-checked on the write.
+
+`recipes.macro_category` looks like the obvious source for this and is not — 533 of 1222 rows are
+blank and the values that exist are dish types, not macro profiles ("Meal" 96, "Dessert" 71,
+"Porridge" 51, "Sabzi" 48, "Chinese" 46); there is no "High Protein" value anywhere in it. So
+`recipe-macro-profile.ts` derives the tags from each recipe's own verified per-100g macros, which
+every row has and which therefore cannot disagree with the numbers printed beside the dish.
+
+**Each tag is two gates, and the second one is the point.** Share-of-calories alone is actively wrong
+on this data — measured before the thresholds were picked, not after. Ranked by protein share the
+second-highest row in the entire table is *Fitelo Hibiscus Rose Tea* at 50%, on **0.2 g of protein
+per 100 g and 1.6 kcal**; eight herbal teas are "100% carbohydrate" on ~0.2 g of carbs. A percentage
+of almost nothing is still almost nothing. So each tag also requires a real absolute amount — protein
+≥ 5 g/100 g, carbs ≥ 15 g/100 g — both comfortably below the leanest genuine dish of that kind
+(Beetroot and Moong Dal Salad, 7.3 g protein, sitting exactly on the 25% boundary) and comfortably
+above every infusion (highest: 0.5 g). Same class of problem as the zero-kcal rows
+`recipe-pool-filters.ts` drops, reached from a different direction. The share thresholds themselves
+come off the real distribution (protein: p75 19.6%, p90 26.0% → 25%; carbs: median 57.9% → 55%),
+yielding 101 and 435 rows table-wide, 79 and 352 on a real North Indian non-vegetarian plan. These
+tags are display and filtering only — nothing here reaches the balancer, the validator, or any
+target.
+
 **Recipe-engine only.** `PlanItemButton` dispatches on `PlanViewItem.editing`, which only
 `recipe-view-adapter.ts` populates; an exchange item keeps the older swap-only dialog, where "same
 exchange type, same count" makes quantity editing meaningless by construction. The "+ add"

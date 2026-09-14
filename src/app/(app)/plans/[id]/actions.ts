@@ -19,6 +19,7 @@ import {
   PlanEditError,
   recomputePlanAfterEdit,
 } from "@/lib/plan/recipe-plan-edit"
+import { macroProfileTags, type MacroProfileTag } from "@/lib/plan/recipe-macro-profile"
 import { MANUAL_GRAMS_CEILING_G, MANUAL_GRAMS_FLOOR_G } from "@/lib/plan/recipe-quantity-step"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
 import { ACCEPTANCE_FRACTION } from "@/lib/plan/exchange-solver"
@@ -81,6 +82,13 @@ export interface SwapCandidate {
    * "Editing a saved plan".
    */
   preview?: { grams: number; kcal: number; proteinG: number; carbsG: number; fatG: number }
+  /**
+   * Recipe-engine only: which macro-profile filters this dish satisfies,
+   * computed from its own verified per-100g macros (recipe-macro-profile.ts).
+   * Sent with the candidate rather than recomputed in the browser so the chip
+   * and the numbers printed beside it can never disagree.
+   */
+  macroTags?: MacroProfileTag[]
 }
 
 export async function getSwapCandidates(itemId: string): Promise<SwapCandidate[]> {
@@ -181,21 +189,35 @@ export async function approvePlan(planId: string): Promise<void> {
 // produced the plan it is rendering.
 // ---------------------------------------------------------------------------
 
-/** A dish's macros at its own authored typical portion - what the picker shows beside each name. */
-function previewFor(recipe: {
+/**
+ * One recipe row as the picker needs it: its macros at its own authored
+ * typical portion, plus the macro-profile tags the filter chips act on. Both
+ * derived from the same per-100g figures, so a dish tagged "high protein"
+ * always shows a protein figure that justifies it.
+ */
+function toCandidate(recipe: {
+  id: string
+  name: string
+  unitLabel: string | null
   idealGrams: number
   kcalPer100G: number
   proteinPer100G: number
   carbsPer100G: number
   fatPer100G: number
-}) {
+}): SwapCandidate {
   const f = recipe.idealGrams / 100
   return {
-    grams: recipe.idealGrams,
-    kcal: recipe.kcalPer100G * f,
-    proteinG: recipe.proteinPer100G * f,
-    carbsG: recipe.carbsPer100G * f,
-    fatG: recipe.fatPer100G * f,
+    id: recipe.id,
+    nameEn: recipe.name,
+    householdMeasure: recipe.unitLabel,
+    preview: {
+      grams: recipe.idealGrams,
+      kcal: recipe.kcalPer100G * f,
+      proteinG: recipe.proteinPer100G * f,
+      carbsG: recipe.carbsPer100G * f,
+      fatG: recipe.fatPer100G * f,
+    },
+    macroTags: macroProfileTags(recipe),
   }
 }
 
@@ -206,7 +228,7 @@ async function recipeSwapCandidates(itemId: string): Promise<SwapCandidate[]> {
   const pool = await eligibleRecipesForPlan(loaded.ctx)
   return pool
     .filter((r) => r.id !== loaded.item.recipeId)
-    .map((r) => ({ id: r.id, nameEn: r.name, householdMeasure: r.unitLabel, preview: previewFor(r) }))
+    .map(toCandidate)
     .sort((a, b) => a.nameEn.localeCompare(b.nameEn))
 }
 
@@ -347,7 +369,7 @@ export async function getAddItemCandidates(mealId: string): Promise<SwapCandidat
   const pool = await eligibleRecipesForPlan(loaded.ctx)
   return pool
     .filter((r) => !alreadyHere.has(r.id))
-    .map((r) => ({ id: r.id, nameEn: r.name, householdMeasure: r.unitLabel, preview: previewFor(r) }))
+    .map(toCandidate)
     .sort((a, b) => a.nameEn.localeCompare(b.nameEn))
 }
 
