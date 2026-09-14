@@ -1419,6 +1419,87 @@ picker.
 The success toast deliberately does NOT say "macros unchanged" — true for an exchange swap, false
 here. Promising something untrue about a clinical number is worse than a vaguer message.
 
+### Editing a saved plan — delete, quantity, add (2026-09-14)
+
+A dietitian reading a generated week wants three more things than a swap: take a dish off a meal,
+change how much of one dish is served, and put another dish on. All three land on the same
+machinery the swap already built, and all three end the same way — `recipe-balancer.ts` solves a
+whole day at once, so every edit re-balances that day and then recomputes the plan's weekly average,
+`deviation` and `warnings`. That shared tail was written once for the swap and is now
+`recipe-plan-edit.ts`'s `recomputePlanAfterEdit()`, so four edits cannot drift apart on what they
+recompute or which target they aim at (the FOOD target, read from the plan's own supplement
+snapshot — see "Prescribed protein supplement"). No model is involved in an edit at all.
+
+**Macros are now visible per item, which they were not.** The plan table only ever totalled a whole
+meal row; the swap picker listed bare names. So the one thing a dietitian is actually deciding on —
+what this dish costs, and what changing it would do — was the one thing not on screen. Every edit
+affordance now shows it: the dialog opens with the item's own kcal/protein/carbs/fat/fibre, the
+quantity stepper shows the resulting macros AND the signed delta live as you step, each swap and add
+candidate carries its macros at its own typical portion, and the remove tab states exactly what
+removing it takes out of the day. `PlanViewItem` already carried every one of these figures — this
+is a display gap being closed, not new arithmetic.
+
+**Quantity steps by the piece when the dish has one.** "One more roti" is a real instruction; "40 g
+more roti" is the same instruction in a unit nobody cooks in. `recipes.unit_label` +
+`per_unit_grams` already exist from ingestion and carry exactly this: 409 of 1222 rows are `piece`,
+each with its own weight — Jowar Roti 42 g, Wheat Bran Roti 60 g, Plain Dosa 35 g. So the step is
+the recipe's own piece weight, never a constant 40 g guessed across all of them.
+`recipe-quantity-step.ts` is the pure logic. Only `"piece"` counts as countable: every other
+ingested noun ("cup", "katori", "bowl", "glass", and the long tail of stray words the source text
+left behind — "bhindi", "chole", "'g") is a vessel or an artifact, the same call
+`recipe-quantity-display.ts` already made against the same data. Everything else steps by a round
+25 g.
+
+Two details that matter on real data. Generation optimises freely and rounds to a 5 g grid, so a
+real plated item is routinely 125 g of a 42 g roti — 2.98 pieces. Stepping up from there gives 3
+pieces, not 3.98: the first press snaps to the grid, which is what "one more roti" means when the
+page says 125 g. And `describeQuantity()` refuses to *call* 125 g "3 pieces" — a fabricated count on
+a clinical document is worse than a bare gram figure.
+
+**A hand-set quantity is LOCKED, and that is the whole feature.** Every edit re-balances the day, so
+an unlocked hand-set quantity would be optimised straight back on the very next edit — the feature
+would appear to work and then silently undo itself. `diet_plan_recipe_items.grams_locked`
+(`20260914120000_recipe_item_grams_locked.sql`) marks it; `recipe-balancer.ts` holds that item's
+grams EXACTLY as given — not updated, not clamped to the authored serving range, not rounded to the
+5 g grid — while still counting its macros in full toward the day, so every other dish is
+re-optimised around it. That is what "make it three rotis" asks for: the number stands and the rest
+of the day absorbs it. A locked item is also never reported in `cappedRecipeNames` — sitting at a
+serving limit there is a deliberate instruction, not a solver failure to warn about. "Let the plan
+decide" clears the flag and hands the number back. Generation never sets it; every gram a fresh week
+writes is solver-owned exactly as before.
+
+**The authored serving range is advisory for a hand-set quantity, not a ceiling.** `max_grams` is
+often only 2-3x ideal (Jowar Roti: min 42, max 126 — three rotis), and a dietitian prescribing a
+fourth is making a clinical call, not a data error. The stepper goes past it and says so; the hard
+bounds are the 5-1000 g plausibility envelope `recipe-quantity-normalize.ts` already applies at
+ingestion. This is not a softening of the balancer's clamp — that clamp still governs every
+*solver-owned* gram, which is all of them until a human types one.
+
+**A meal can be emptied, and it says so.** Deleting the last item in a slot is allowed:
+`recipe-plausibility-validate.ts` already reports `"breakfast has no resolved items"`, and
+`recomputePlanAfterEdit()` re-runs it, so the amber banner at the top of the plan carries it
+immediately. Refusing the delete would be the system overruling a judgement that is the dietitian's;
+saying nothing would hide it. Warning loudly is the honest middle — the same posture as
+best-of-N saving its nearest week rather than rejecting it.
+
+**Adding a dish** offers exactly the pool generation drew from (diet type, cuisine, season, live
+allergens, the no-zero-kcal rule) minus what is already in that meal — a duplicate recipe in one
+slot is a plausibility problem, so it is kept out of the picker rather than offered and then warned
+about. It goes in at the recipe's own `idealGrams` (the generator's own seed) and the day is
+immediately re-balanced, so an added dish does not simply pile its macros onto a day that was
+already on target — everything unlocked shrinks to make room. Eligibility is re-checked server-side
+on the write, never trusted from whatever the picker last showed.
+
+**Swapping changed in one way.** The new dish now starts at its OWN `idealGrams` rather than
+inheriting the replaced dish's grams, which could sit far outside its serving range, and any lock is
+cleared — the quantity a dietitian chose was for a different dish.
+
+**Recipe-engine only.** `PlanItemButton` dispatches on `PlanViewItem.editing`, which only
+`recipe-view-adapter.ts` populates; an exchange item keeps the older swap-only dialog, where "same
+exchange type, same count" makes quantity editing meaningless by construction. The "+ add"
+affordance is gated on `plan.engine === "recipe"` for the same reason. An approved plan is locked to
+every edit, as it already was to swaps.
+
 ### Rollout
 
 `RECIPE_ENGINE_ENABLED` defaults off everywhere. Both engines coexist in `route.ts`, gated by one

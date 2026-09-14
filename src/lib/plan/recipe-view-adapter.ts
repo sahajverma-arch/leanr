@@ -21,7 +21,10 @@ import type { DietPlanRecipeItem, Recipe } from "@/db/schema"
 import { formatRecipeQuantity } from "./recipe-quantity-display"
 import type { PlanViewItem } from "./plan-guidelines"
 
-export function recipeItemToPlanViewItem(item: DietPlanRecipeItem, recipe: Pick<Recipe, "name" | "category" | "unitLabel" | "perUnitGrams">): PlanViewItem {
+export function recipeItemToPlanViewItem(
+  item: DietPlanRecipeItem,
+  recipe: Pick<Recipe, "name" | "category" | "unitLabel" | "perUnitGrams" | "minGrams" | "maxGrams">
+): PlanViewItem {
   const factor = item.grams / 100
   return {
     id: item.id,
@@ -39,5 +42,25 @@ export function recipeItemToPlanViewItem(item: DietPlanRecipeItem, recipe: Pick<
     dishFamilyId: null,
     tags: [],
     quantityLabel: formatRecipeQuantity(recipe, item.grams),
+    // What the plan page's edit dialog needs. unitLabel/perUnitGrams/min/max
+    // are read LIVE from `recipes`, not snapshotted, for the same reason
+    // quantityLabel is: a serving-unit convention and a realistic portion
+    // range are properties of the dish, not of this plan's nutrition. The
+    // per-100g figures beside them ARE the snapshot, so the dialog's
+    // arithmetic matches the macros already on the page.
+    editing: {
+      gramsLocked: item.gramsLocked,
+      unitLabel: recipe.unitLabel,
+      perUnitGrams: recipe.perUnitGrams,
+      minGrams: recipe.minGrams,
+      maxGrams: recipe.maxGrams,
+      per100G: {
+        kcal: item.proteinPer100GSnapshot * 4 + item.carbsPer100GSnapshot * 4 + item.fatPer100GSnapshot * 9,
+        proteinG: item.proteinPer100GSnapshot,
+        carbsG: item.carbsPer100GSnapshot,
+        fatG: item.fatPer100GSnapshot,
+        fiberG: item.fiberPer100GSnapshot,
+      },
+    },
   }
 }

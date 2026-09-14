@@ -534,6 +534,12 @@ export const dietPlanRecipeItems = pgTable("diet_plan_recipe_items", {
     .notNull()
     .references(() => recipes.id),
   grams: numeric("grams", { mode: "number" }).notNull(),
+  // True when a dietitian set this quantity by hand on the plan page. Every
+  // edit re-balances the whole day (recipe-balancer.ts solves a day at
+  // once), so without this a hand-set quantity would be optimised straight
+  // back on the next edit. Locked items are held fixed and the rest of the
+  // day is re-optimised around them.
+  gramsLocked: boolean("grams_locked").notNull().default(false),
   // Snapshotted at generation time, NOT a live join to recipes — a later CSV
   // re-ingestion that corrects a recipe's macros must never retroactively
   // rewrite an already-approved historical plan's displayed numbers.

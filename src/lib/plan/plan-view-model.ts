@@ -57,7 +57,7 @@ import { TABLE_4_1, ZERO_COUNTS, type ExchangeCode, type ExchangeCounts } from "
 import { describeSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 
 export { CATEGORY_LABEL } from "./plan-guidelines"
-export type { GuidelineBullet, PlanViewDay, PlanViewItem, PlanViewMeal, WeeklySummaryRow } from "./plan-guidelines"
+export type { GuidelineBullet, PlanViewDay, PlanViewItem, PlanViewMeal, RecipeItemEditing, WeeklySummaryRow } from "./plan-guidelines"
 
 export interface PlanViewModel {
   plan: {
@@ -267,6 +267,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
     )
     const list = mealsByDayId.get(meal.dietPlanDayId) ?? []
     list.push({
+      id: meal.id,
       slot: meal.slot,
       slotLabel: SLOT_LABEL[meal.slot] ?? meal.slot,
       timeLabel: SLOT_TIME[meal.slot] ?? "",

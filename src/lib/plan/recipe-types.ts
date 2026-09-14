@@ -106,6 +106,13 @@ export interface RecipeSelection {
 export interface GroundedRecipeItem {
   recipe: RecipeForPipeline
   grams: number
+  /**
+   * Set only on a plan a dietitian has hand-edited: this item's quantity was
+   * typed, not solved. recipe-balancer.ts holds it fixed and re-optimises the
+   * rest of the day around it. Never set by generation - absent means the
+   * solver owns the number, which is every item on a freshly generated week.
+   */
+  gramsLocked?: boolean
 }
 export interface GroundedRecipeMeal {
   slot: string

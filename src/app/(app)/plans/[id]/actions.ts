@@ -1,6 +1,6 @@
 "use server"
 
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
@@ -10,15 +10,17 @@ import type { Answers } from "@/lib/counselling/questions"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { clientAllergensFromAnswers, clientDislikesFromAnswers } from "@/lib/plan/client-profile-from-answers"
 import { filterEligibleFoods, type EligibilityCriteria } from "@/lib/plan/eligible-foods"
-import { and, inArray } from "drizzle-orm"
-import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
-import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
-import { clientRecipeAllergenTagsFromAnswers } from "@/lib/plan/client-profile-from-answers"
-import { eligibleCuisinesFor, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
-import { RECIPE_PIPELINE_COLUMNS, type DailyRecipeTarget } from "@/lib/plan/recipe-types"
-import { deviationOf, rebalanceDay, weeklyAverageOf, type StoredRecipeMeal } from "@/lib/plan/recipe-swap"
-import { buildRecipeWarnings, offTargetSummary } from "@/lib/plan/recipe-warnings"
-import { seasonFor } from "@/lib/plan/season"
+import {
+  assertEditable,
+  assertRecipeAllowed,
+  eligibleRecipesForPlan,
+  loadRecipeItemContext,
+  loadRecipeMealContext,
+  PlanEditError,
+  recomputePlanAfterEdit,
+} from "@/lib/plan/recipe-plan-edit"
+import { MANUAL_GRAMS_CEILING_G, MANUAL_GRAMS_FLOOR_G } from "@/lib/plan/recipe-quantity-step"
+import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
 import { ACCEPTANCE_FRACTION } from "@/lib/plan/exchange-solver"
 
 class SwapValidationError extends Error {
@@ -72,6 +74,13 @@ export interface SwapCandidate {
   id: string
   nameEn: string
   householdMeasure: string | null
+  /**
+   * Recipe-engine only: what this dish would actually cost, at its own
+   * typical portion. A picker that lists names alone tells a dietitian
+   * nothing about the one thing they are choosing on - see CLAUDE.md
+   * "Editing a saved plan".
+   */
+  preview?: { grams: number; kcal: number; proteinG: number; carbsG: number; fatG: number }
 }
 
 export async function getSwapCandidates(itemId: string): Promise<SwapCandidate[]> {
@@ -158,124 +167,74 @@ export async function approvePlan(planId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Recipe-engine swaps
+// Recipe-engine plan edits
 //
 // A separate path from the exchange swap above, because the two guarantee
 // different things. An exchange swap keeps the exchange type and count, so
-// macros are unchanged by construction. A recipe swap replaces a dish with
-// one that has entirely different per-100g macros and its own serving range,
-// so the whole day must be re-balanced and the plan's totals recomputed.
+// macros are unchanged by construction. Every recipe-engine edit - swap,
+// delete, add, or a hand-set quantity - changes the day's macros outright, so
+// the whole day is re-balanced and the plan's totals recomputed. That shared
+// tail lives in recipe-plan-edit.ts; these functions only do the edit itself.
 //
 // getSwapCandidates/swapPlanItem dispatch on which table the id belongs to,
 // so swap-item-button.tsx needs no change and no knowledge of which engine
 // produced the plan it is rendering.
 // ---------------------------------------------------------------------------
 
-async function loadRecipeItemContext(itemId: string) {
-  const [row] = await db
-    .select({ item: dietPlanRecipeItems, meal: dietPlanMeals, day: dietPlanDays, plan: dietPlans })
-    .from(dietPlanRecipeItems)
-    .innerJoin(dietPlanMeals, eq(dietPlanRecipeItems.dietPlanMealId, dietPlanMeals.id))
-    .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
-    .innerJoin(dietPlans, eq(dietPlanDays.dietPlanId, dietPlans.id))
-    .where(eq(dietPlanRecipeItems.id, itemId))
-    .limit(1)
-  if (!row) return null
-
-  const [roadmapRow] = await db.select().from(roadmaps).where(eq(roadmaps.id, row.plan.roadmapId)).limit(1)
-  if (!roadmapRow) return null
-  const [sessionRow] = await db
-    .select()
-    .from(counsellingSessions)
-    .where(eq(counsellingSessions.id, roadmapRow.sessionId))
-    .limit(1)
-  const answers = (sessionRow?.answers ?? {}) as Answers
-
-  // `region` carries the cuisine string for recipe-engine plans — the same
-  // column reuse generation made (see CLAUDE.md "The recipe engine").
-  const cuisine = row.plan.region as RecipeCuisine
-  // The FOOD target, not the prescribed one — a swap re-balances the day, so
-  // it must aim at exactly what generation aimed at. Read from the plan's OWN
-  // snapshot rather than the live roadmap_supplements row: editing the
-  // prescription later must not silently re-balance a plan that was built
-  // before the change.
-  const wt = weekTargets(roadmapRow.output as RoadmapResult, row.plan.weekNumber)
-  const { food } = foodTargetsAfterSupplement(wt, (row.plan.supplement as PrescribedSupplement | null) ?? null)
-  const target: DailyRecipeTarget = {
-    kcal: food.kcal,
-    proteinG: food.proteinG,
-    carbsG: food.carbsG,
-    fatG: food.fatG,
-    fiberG: food.fibreG,
-  }
-
+/** A dish's macros at its own authored typical portion - what the picker shows beside each name. */
+function previewFor(recipe: {
+  idealGrams: number
+  kcalPer100G: number
+  proteinPer100G: number
+  carbsPer100G: number
+  fatPer100G: number
+}) {
+  const f = recipe.idealGrams / 100
   return {
-    ...row,
-    cuisine,
-    target,
-    // Re-derived live, not snapshotted: an allergy correction made after
-    // generation must immediately narrow what the picker offers — the same
-    // reasoning the exchange swap's own context already uses.
-    allergenTags: clientRecipeAllergenTagsFromAnswers(answers),
-    season: seasonFor(row.plan.weekStart, cuisine),
+    grams: recipe.idealGrams,
+    kcal: recipe.kcalPer100G * f,
+    proteinG: recipe.proteinPer100G * f,
+    carbsG: recipe.carbsPer100G * f,
+    fatG: recipe.fatPer100G * f,
   }
 }
 
 async function recipeSwapCandidates(itemId: string): Promise<SwapCandidate[]> {
-  const ctx = await loadRecipeItemContext(itemId)
-  if (!ctx) return []
+  const loaded = await loadRecipeItemContext(itemId)
+  if (!loaded) return []
 
-  const rows = await db
-    .select(RECIPE_PIPELINE_COLUMNS)
-    .from(recipes)
-    .where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisinesFor(ctx.cuisine))))
-
-  return rows
-    .filter(
-      (r) =>
-        r.id !== ctx.item.recipeId &&
-        r.dietTypes.includes(ctx.plan.dietType) &&
-        (r.season === "all_year" || r.season === ctx.season) &&
-        !r.allergenTags.some((t) => ctx.allergenTags.includes(t)) &&
-        // Same rule the generator's pool filter applies: a row claiming to be
-        // food with no energy is not offerable (recipe-pool-filters.ts).
-        r.kcalPer100G > 0
-    )
-    .map((r) => ({ id: r.id, nameEn: r.name, householdMeasure: r.unitLabel }))
+  const pool = await eligibleRecipesForPlan(loaded.ctx)
+  return pool
+    .filter((r) => r.id !== loaded.item.recipeId)
+    .map((r) => ({ id: r.id, nameEn: r.name, householdMeasure: r.unitLabel, preview: previewFor(r) }))
     .sort((a, b) => a.nameEn.localeCompare(b.nameEn))
 }
 
 async function performRecipeSwap(itemId: string, newRecipeId: string): Promise<string> {
-  const ctx = await loadRecipeItemContext(itemId)
-  if (!ctx) throw new SwapValidationError("Item not found.")
-  if (ctx.plan.status === "approved") {
-    throw new SwapValidationError("This plan is already approved — swaps are locked.")
-  }
+  const loaded = await loadRecipeItemContext(itemId)
+  if (!loaded) throw new PlanEditError("Item not found.")
+  assertEditable(loaded.ctx)
 
-  const [newRecipe] = await db
-    .select(RECIPE_PIPELINE_COLUMNS)
-    .from(recipes)
-    .where(eq(recipes.id, newRecipeId))
-    .limit(1)
-  if (!newRecipe) throw new SwapValidationError("Recipe not found.")
-  if (!newRecipe.dietTypes.includes(ctx.plan.dietType)) {
-    throw new SwapValidationError(`${newRecipe.name} is not suitable for a ${ctx.plan.dietType} client — swap rejected.`)
-  }
-  const blocked = newRecipe.allergenTags.filter((t) => ctx.allergenTags.includes(t))
-  if (blocked.length > 0) {
-    throw new SwapValidationError(
-      `${newRecipe.name} contains ${blocked.join(", ")}, which this client must avoid — swap rejected.`
-    )
-  }
+  const [newRecipe] = await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(eq(recipes.id, newRecipeId)).limit(1)
+  if (!newRecipe) throw new PlanEditError("Recipe not found.")
+  assertRecipeAllowed(newRecipe, loaded.ctx)
 
   await db.transaction(async (tx) => {
-    // 1. Substitute the recipe, snapshotting macros from the row as it is
-    //    today — this item is being written now, so today's figures are its
-    //    honest provenance. Every other item keeps its own snapshot.
+    // Substitute the recipe, snapshotting macros from the row as it is today
+    // - this item is being written now, so today's figures are its honest
+    // provenance. Every other item keeps its own snapshot.
+    //
+    // The new dish starts at its OWN typical portion rather than inheriting
+    // the replaced dish's grams, which may sit far outside its serving range:
+    // that is the same seed generation uses, so the re-balance below starts
+    // where generation would have. A hand-set lock is cleared for the same
+    // reason - the quantity a dietitian chose was for a different dish.
     await tx
       .update(dietPlanRecipeItems)
       .set({
         recipeId: newRecipe.id,
+        grams: newRecipe.idealGrams,
+        gramsLocked: false,
         proteinPer100GSnapshot: newRecipe.proteinPer100G,
         carbsPer100GSnapshot: newRecipe.carbsPer100G,
         fatPer100GSnapshot: newRecipe.fatPer100G,
@@ -283,98 +242,156 @@ async function performRecipeSwap(itemId: string, newRecipeId: string): Promise<s
       })
       .where(eq(dietPlanRecipeItems.id, itemId))
 
-    // 2. Load the whole plan. Only the edited day's grams can actually move,
-    //    but the plan's weekly average is computed across all seven, so all
-    //    are needed.
-    const dayRows = await tx.select().from(dietPlanDays).where(eq(dietPlanDays.dietPlanId, ctx.plan.id))
-    const mealRows = await tx
-      .select()
-      .from(dietPlanMeals)
-      .where(
-        inArray(
-          dietPlanMeals.dietPlanDayId,
-          dayRows.map((d) => d.id)
-        )
-      )
-    const itemRows = await tx
-      .select({ item: dietPlanRecipeItems, recipe: RECIPE_PIPELINE_COLUMNS })
-      .from(dietPlanRecipeItems)
-      .innerJoin(recipes, eq(dietPlanRecipeItems.recipeId, recipes.id))
-      .where(
-        inArray(
-          dietPlanRecipeItems.dietPlanMealId,
-          mealRows.map((m) => m.id)
-        )
-      )
-
-    const balancedDays = []
-    for (const dayRow of [...dayRows].sort((a, b) => a.dayIndex - b.dayIndex)) {
-      const meals: StoredRecipeMeal[] = mealRows
-        .filter((m) => m.dietPlanDayId === dayRow.id)
-        .sort((a, b) => a.slotOrder - b.slotOrder)
-        .map((m) => ({
-          slot: m.slot,
-          items: itemRows
-            .filter((r) => r.item.dietPlanMealId === m.id)
-            .map((r) => ({
-              id: r.item.id,
-              grams: r.item.grams,
-              recipe: r.recipe,
-              proteinPer100GSnapshot: r.item.proteinPer100GSnapshot,
-              carbsPer100GSnapshot: r.item.carbsPer100GSnapshot,
-              fatPer100GSnapshot: r.item.fatPer100GSnapshot,
-              fiberPer100GSnapshot: r.item.fiberPer100GSnapshot,
-            })),
-        }))
-
-      // 3. Re-optimise the day. Item identity is untouched; only grams move,
-      //    and they come from the same deterministic balancer the generator
-      //    uses — no model is involved in a swap at all.
-      const balanced = rebalanceDay(dayRow.dayIndex, meals, ctx.target)
-      balancedDays.push(balanced)
-
-      const flatStored = meals.flatMap((m) => m.items)
-      const flatBalanced = balanced.meals.flatMap((m) => m.items)
-      for (let i = 0; i < flatStored.length; i++) {
-        if (flatStored[i].grams !== flatBalanced[i].grams) {
-          await tx
-            .update(dietPlanRecipeItems)
-            .set({ grams: flatBalanced[i].grams })
-            .where(eq(dietPlanRecipeItems.id, flatStored[i].id))
-        }
-      }
-
-      await tx
-        .update(dietPlanDays)
-        .set({
-          achieved: {
-            kcal: balanced.totals.kcal,
-            proteinG: balanced.totals.proteinG,
-            carbsG: balanced.totals.carbsG,
-            fatG: balanced.totals.fatG,
-            fibreG: balanced.totals.fiberG,
-          },
-        })
-        .where(eq(dietPlanDays.id, dayRow.id))
-    }
-
-    // 4. Recompute the plan-level figures the dietitian judges the plan on,
-    //    including the warnings banner — a swap can fix a macro miss, and the
-    //    page must stop claiming it if so.
-    const achieved = weeklyAverageOf(balancedDays.map((d) => d.totals))
-    const warnings = buildRecipeWarnings(balancedDays, ctx.target, {
-      dietType: ctx.plan.dietType,
-      eligibleCuisines: eligibleCuisinesFor(ctx.cuisine),
-      allergenTags: ctx.allergenTags,
-    })
-    const summary = offTargetSummary(achieved, ctx.target, balancedDays.length)
-    if (summary) warnings.unshift(summary)
-
-    await tx
-      .update(dietPlans)
-      .set({ achieved, deviation: deviationOf(achieved, ctx.target), warnings })
-      .where(eq(dietPlans.id, ctx.plan.id))
+    await recomputePlanAfterEdit(tx, loaded.ctx)
   })
 
-  return ctx.plan.id
+  return loaded.ctx.planId
+}
+
+/**
+ * Remove one item from a meal.
+ *
+ * A meal CAN be emptied this way, and that is deliberate. The plausibility
+ * checker already reports an empty slot ("breakfast has no resolved items")
+ * and recomputePlanAfterEdit re-runs it, so the plan page says so in the
+ * amber banner immediately. Refusing the delete outright would be the system
+ * overruling the dietitian on a judgement that is theirs; saying nothing
+ * would hide it. Warning loudly is the honest middle.
+ */
+export async function deletePlanItem(itemId: string): Promise<void> {
+  await requireStaffUser()
+  itemId = uuidSchema.parse(itemId)
+
+  const loaded = await loadRecipeItemContext(itemId)
+  if (!loaded) throw new PlanEditError("Item not found, or this plan's items are not editable.")
+  assertEditable(loaded.ctx)
+
+  await db.transaction(async (tx) => {
+    await tx.delete(dietPlanRecipeItems).where(eq(dietPlanRecipeItems.id, itemId))
+    await recomputePlanAfterEdit(tx, loaded.ctx)
+  })
+
+  revalidatePath(`/plans/${loaded.ctx.planId}`)
+}
+
+/**
+ * Set one item's quantity by hand, and LOCK it.
+ *
+ * Locking is what makes the feature mean anything: every edit re-balances the
+ * whole day, so an unlocked hand-set quantity would be optimised straight
+ * back on the next edit. Locked, the balancer holds this item exactly where
+ * the dietitian put it and re-optimises the rest of the day around it - which
+ * is what "make it three rotis" actually asks for.
+ *
+ * The grams come from the stepper, which steps by the recipe's own piece
+ * weight when it has one (recipe-quantity-step.ts). Bounds here are the
+ * ingestion plausibility envelope, NOT the recipe's authored serving range: a
+ * fourth roti past a max of three is a clinical call, not a data error.
+ */
+export async function setPlanItemGrams(itemId: string, grams: number): Promise<void> {
+  await requireStaffUser()
+  itemId = uuidSchema.parse(itemId)
+  const parsedGrams = z.number().finite().min(MANUAL_GRAMS_FLOOR_G).max(MANUAL_GRAMS_CEILING_G).parse(grams)
+
+  const loaded = await loadRecipeItemContext(itemId)
+  if (!loaded) throw new PlanEditError("Item not found, or this plan's items are not editable.")
+  assertEditable(loaded.ctx)
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(dietPlanRecipeItems)
+      .set({ grams: parsedGrams, gramsLocked: true })
+      .where(eq(dietPlanRecipeItems.id, itemId))
+    await recomputePlanAfterEdit(tx, loaded.ctx)
+  })
+
+  revalidatePath(`/plans/${loaded.ctx.planId}`)
+}
+
+/** Hand the quantity back to the solver. The re-balance that follows immediately is free to move it. */
+export async function unlockPlanItemGrams(itemId: string): Promise<void> {
+  await requireStaffUser()
+  itemId = uuidSchema.parse(itemId)
+
+  const loaded = await loadRecipeItemContext(itemId)
+  if (!loaded) throw new PlanEditError("Item not found, or this plan's items are not editable.")
+  assertEditable(loaded.ctx)
+
+  await db.transaction(async (tx) => {
+    await tx.update(dietPlanRecipeItems).set({ gramsLocked: false }).where(eq(dietPlanRecipeItems.id, itemId))
+    await recomputePlanAfterEdit(tx, loaded.ctx)
+  })
+
+  revalidatePath(`/plans/${loaded.ctx.planId}`)
+}
+
+/**
+ * Every dish that could be added to this meal. The same pool generation drew
+ * from, minus whatever is already in the meal - a duplicate recipe in one
+ * slot is a plausibility problem (recipe-plausibility-validate.ts), so it is
+ * kept out of the picker rather than offered and then warned about.
+ */
+export async function getAddItemCandidates(mealId: string): Promise<SwapCandidate[]> {
+  await requireStaffUser()
+  mealId = uuidSchema.parse(mealId)
+
+  const loaded = await loadRecipeMealContext(mealId)
+  if (!loaded) return []
+
+  const existing = await db
+    .select({ recipeId: dietPlanRecipeItems.recipeId })
+    .from(dietPlanRecipeItems)
+    .where(eq(dietPlanRecipeItems.dietPlanMealId, mealId))
+  const alreadyHere = new Set(existing.map((e) => e.recipeId))
+
+  const pool = await eligibleRecipesForPlan(loaded.ctx)
+  return pool
+    .filter((r) => !alreadyHere.has(r.id))
+    .map((r) => ({ id: r.id, nameEn: r.name, householdMeasure: r.unitLabel, preview: previewFor(r) }))
+    .sort((a, b) => a.nameEn.localeCompare(b.nameEn))
+}
+
+/**
+ * Add a dish to a meal.
+ *
+ * It goes in at the recipe's own authored typical portion (`idealGrams`, the
+ * same seed the generator uses) and is then immediately re-balanced with the
+ * rest of the day, so the added dish does not simply pile its macros on top
+ * of a day that was already on target - everything unlocked shrinks to make
+ * room for it.
+ */
+export async function addPlanItem(mealId: string, recipeId: string): Promise<void> {
+  await requireStaffUser()
+  mealId = uuidSchema.parse(mealId)
+  recipeId = uuidSchema.parse(recipeId)
+
+  const loaded = await loadRecipeMealContext(mealId)
+  if (!loaded) throw new PlanEditError("Meal not found, or this plan's items are not editable.")
+  assertEditable(loaded.ctx)
+
+  const [recipe] = await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(eq(recipes.id, recipeId)).limit(1)
+  if (!recipe) throw new PlanEditError("Recipe not found.")
+  assertRecipeAllowed(recipe, loaded.ctx)
+
+  const [duplicate] = await db
+    .select({ id: dietPlanRecipeItems.id })
+    .from(dietPlanRecipeItems)
+    .where(and(eq(dietPlanRecipeItems.dietPlanMealId, mealId), eq(dietPlanRecipeItems.recipeId, recipeId)))
+    .limit(1)
+  if (duplicate) throw new PlanEditError(`${recipe.name} is already in this meal.`)
+
+  await db.transaction(async (tx) => {
+    await tx.insert(dietPlanRecipeItems).values({
+      dietPlanMealId: mealId,
+      recipeId: recipe.id,
+      grams: recipe.idealGrams,
+      proteinPer100GSnapshot: recipe.proteinPer100G,
+      carbsPer100GSnapshot: recipe.carbsPer100G,
+      fatPer100GSnapshot: recipe.fatPer100G,
+      fiberPer100GSnapshot: recipe.fiberPer100G,
+    })
+    await recomputePlanAfterEdit(tx, loaded.ctx)
+  })
+
+  revalidatePath(`/plans/${loaded.ctx.planId}`)
 }

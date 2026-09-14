@@ -14,11 +14,14 @@ function recipe(name: string, per100: { p: number; c: number; f: number }, min =
   } as unknown as RecipeForPipeline
 }
 
-function meal(slot: string, items: { name: string; grams: number; snap: { p: number; c: number; f: number } }[]): StoredRecipeMeal {
+function meal(
+  slot: string,
+  items: { name: string; grams: number; snap: { p: number; c: number; f: number }; locked?: boolean }[]
+): StoredRecipeMeal {
   return {
     slot,
     items: items.map((i, n) => ({
-      id: `${slot}-${n}`, grams: i.grams, recipe: recipe(i.name, i.snap),
+      id: `${slot}-${n}`, grams: i.grams, gramsLocked: i.locked ?? false, recipe: recipe(i.name, i.snap),
       proteinPer100GSnapshot: i.snap.p, carbsPer100GSnapshot: i.snap.c,
       fatPer100GSnapshot: i.snap.f, fiberPer100GSnapshot: 2,
     })),
@@ -33,6 +36,13 @@ describe("toBalanceableDay", () => {
     stored.items[0].recipe = recipe("Dal", { p: 99, c: 99, f: 99 })
     const day = toBalanceableDay(0, [stored])
     expect(day.meals[0].items[0].recipe.proteinPer100G).toBe(10)
+  })
+
+  it("carries a dietitian's lock through to the balancer", () => {
+    // Without this the flag is read from the DB, dropped on the way in, and
+    // the hand-set quantity is optimised away on the very next edit.
+    const stored = meal("lunch", [{ name: "Roti", grams: 126, snap: { p: 8, c: 60, f: 2 }, locked: true }])
+    expect(toBalanceableDay(0, [stored]).meals[0].items[0].gramsLocked).toBe(true)
   })
 
   it("recomputes kcal from the snapshot macros so the two can never disagree", () => {

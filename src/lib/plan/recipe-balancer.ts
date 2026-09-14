@@ -14,6 +14,19 @@
  * portion. A recipe landing at its real limit without closing the gap is
  * recorded in cappedRecipeNames, feeding the day-retry diagnosis ("add
  * another dish", never "make this one unrealistically bigger").
+ *
+ * LOCKED ITEMS. An item carrying `gramsLocked` is one a dietitian set by
+ * hand on the plan page. Its grams are held EXACTLY as given - not updated,
+ * not clamped to the authored serving range, not rounded to the 5 g grid -
+ * while still counting in full toward the day's predicted macros, so every
+ * other item is re-optimised around it. That is what "make it three rotis"
+ * has to mean: the dietitian's number stands and the rest of the day absorbs
+ * it. A locked item is also never reported in cappedRecipeNames - sitting at
+ * or past a serving limit is a deliberate instruction there, not a solver
+ * failure worth telling anyone about.
+ *
+ * Generation never sets the flag; every gram it writes is solver-owned,
+ * exactly as before locking existed.
  */
 
 import type { DailyRecipeTarget, GroundedRecipeDay, GroundedRecipeMeal } from "./recipe-types"
@@ -46,6 +59,7 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
 
   const limits = flatItems.map((item) => getServingLimitsG(item.recipe))
   const perGram = flatItems.map((item) => macroPerGram(item.recipe))
+  const locked = flatItems.map((item) => item.gramsLocked === true)
   let x = flatItems.map((item) => item.grams)
 
   for (let iter = 0; iter < ITERATIONS; iter++) {
@@ -60,6 +74,7 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
     })
 
     x = x.map((grams, i) => {
+      if (locked[i]) return grams
       let num = 0
       let den = 0
       for (const key of Object.keys(WEIGHTS) as MacroKey[]) {
@@ -73,7 +88,7 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
     })
   }
 
-  const finalGrams = x.map((v) => Math.max(0, Math.round(v / 5) * 5))
+  const finalGrams = x.map((v, i) => (locked[i] ? v : Math.max(0, Math.round(v / 5) * 5)))
   const cappedRecipeNames: string[] = []
   let cursor = 0
   const newMeals: GroundedRecipeMeal[] = day.meals.map((meal) => ({
@@ -81,9 +96,12 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
     items: meal.items.map((item) => {
       const grams = finalGrams[cursor]
       const lim = limits[cursor]
-      if (grams >= lim.max - CAP_MARGIN_G || grams <= lim.min + CAP_MARGIN_G) cappedRecipeNames.push(item.recipe.name)
+      const isLocked = locked[cursor]
+      if (!isLocked && (grams >= lim.max - CAP_MARGIN_G || grams <= lim.min + CAP_MARGIN_G)) {
+        cappedRecipeNames.push(item.recipe.name)
+      }
       cursor++
-      return { recipe: item.recipe, grams }
+      return isLocked ? { recipe: item.recipe, grams, gramsLocked: true } : { recipe: item.recipe, grams }
     }),
   }))
 

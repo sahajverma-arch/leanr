@@ -43,6 +43,28 @@ export const SLOT_TIME: Record<string, string> = {
   bedtime: "22:00",
 }
 
+/**
+ * Everything the plan page's edit dialog needs about ONE recipe item, beyond
+ * what it already shows. Present only on a recipe-engine item (see
+ * recipe-view-adapter.ts) - an exchange-engine item is not hand-editable and
+ * leaves this undefined, which is what the UI dispatches on.
+ *
+ * per100G comes from the item's own SNAPSHOT columns, the same source its
+ * displayed macros come from, so the dialog's live "what would this become"
+ * arithmetic can never disagree with the row above it.
+ */
+export interface RecipeItemEditing {
+  /** True when a dietitian set this quantity by hand - the balancer holds it fixed (see recipe-balancer.ts). */
+  gramsLocked: boolean
+  /** recipes.unit_label / per_unit_grams - what one piece is, when this dish is counted in pieces at all. */
+  unitLabel: string | null
+  perUnitGrams: number | null
+  /** The row's own authored serving range. Advisory in the dialog, never a hard stop - see recipe-quantity-step.ts. */
+  minGrams: number
+  maxGrams: number
+  per100G: { kcal: number; proteinG: number; carbsG: number; fatG: number; fiberG: number }
+}
+
 export interface PlanViewItem {
   id: string
   foodId: string
@@ -65,9 +87,13 @@ export interface PlanViewItem {
   dishFamilyId: string | null
   /** Straight from foods.tags — meal-composition.ts reads the "salad" tag to keep raw/salad vegetables out of the cooked "Mixed Vegetable Sabzi" pool. Never read by any nutrition calculation. */
   tags: string[]
+  /** Recipe-engine only. Its presence is what tells the plan page this item can be deleted, re-quantified or swapped by hand. */
+  editing?: RecipeItemEditing
 }
 
 export interface PlanViewMeal {
+  /** diet_plan_meals.id — the target for "add an item to this meal". */
+  id: string
   slot: string
   slotLabel: string
   timeLabel: string

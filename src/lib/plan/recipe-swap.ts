@@ -23,6 +23,8 @@ import type { DailyRecipeTarget, GroundedRecipeDay, RecipeAchievedMacros, Recipe
 export interface StoredRecipeItem {
   id: string
   grams: number
+  /** True when a dietitian set this quantity by hand - the balancer holds it fixed (see recipe-balancer.ts). */
+  gramsLocked: boolean
   recipe: RecipeForPipeline
   proteinPer100GSnapshot: number
   carbsPer100GSnapshot: number
@@ -56,6 +58,7 @@ export function toBalanceableDay(dayIndex: number, meals: StoredRecipeMeal[]): G
       slot: meal.slot,
       items: meal.items.map((item) => ({
         grams: item.grams,
+        gramsLocked: item.gramsLocked,
         recipe: {
           ...item.recipe,
           proteinPer100G: item.proteinPer100GSnapshot,

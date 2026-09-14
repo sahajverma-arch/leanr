@@ -4,7 +4,7 @@ import { balanceDayToTargets } from "./recipe-balancer"
 import { makeRecipe } from "./test-fixtures"
 import type { GroundedRecipeDay } from "./recipe-types"
 
-function makeDay(items: { recipe: ReturnType<typeof makeRecipe>; grams: number }[]): GroundedRecipeDay {
+function makeDay(items: { recipe: ReturnType<typeof makeRecipe>; grams: number; gramsLocked?: boolean }[]): GroundedRecipeDay {
   return {
     dayIndex: 0,
     meals: [{ slot: "lunch", items }],
@@ -63,5 +63,68 @@ describe("balanceDayToTargets", () => {
     const day = makeDay([])
     const balanced = balanceDayToTargets(day, { kcal: 2000, proteinG: 100, carbsG: 200, fatG: 60, fiberG: 30 })
     expect(balanced.totals).toEqual({ kcal: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0 })
+  })
+})
+
+describe("balanceDayToTargets — dietitian-locked quantities", () => {
+  const dal = makeRecipe({ name: "Dal", proteinPer100G: 7, carbsPer100G: 17, fatPer100G: 1.5, fiberPer100G: 5, minGrams: 50, maxGrams: 400, idealGrams: 150 })
+  const roti = makeRecipe({ name: "Jowar Roti", proteinPer100G: 8, carbsPer100G: 60, fatPer100G: 2, fiberPer100G: 6, minGrams: 42, maxGrams: 126, idealGrams: 42 })
+
+  it("holds a locked item EXACTLY where it was set, including off the 5 g grid", () => {
+    // 3 rotis at the row's real 42 g each. A dietitian typed this; rounding
+    // it to 125 would quietly make it 2.98 rotis.
+    const day = makeDay([
+      { recipe: roti, grams: 126, gramsLocked: true },
+      { recipe: dal, grams: 150 },
+    ])
+    const balanced = balanceDayToTargets(day, { kcal: 1200, proteinG: 60, carbsG: 150, fatG: 35, fiberG: 25 })
+    expect(balanced.meals[0].items[0].grams).toBe(126)
+  })
+
+  it("ignores the locked item's own serving range — past the authored max is the point", () => {
+    // Four rotis, where the row's authored max is three (126 g).
+    const day = makeDay([
+      { recipe: roti, grams: 168, gramsLocked: true },
+      { recipe: dal, grams: 150 },
+    ])
+    const balanced = balanceDayToTargets(day, { kcal: 600, proteinG: 30, carbsG: 80, fatG: 15, fiberG: 15 })
+    expect(balanced.meals[0].items[0].grams).toBe(168)
+  })
+
+  it("re-optimises everything else AROUND the locked item", () => {
+    const day = makeDay([
+      { recipe: roti, grams: 126, gramsLocked: true },
+      { recipe: dal, grams: 150 },
+    ])
+    // Deliberately a small target: the only way to reach it is for the dal to
+    // shrink, since the roti cannot move.
+    const balanced = balanceDayToTargets(day, { kcal: 500, proteinG: 20, carbsG: 85, fatG: 8, fiberG: 12 })
+    expect(balanced.meals[0].items[0].grams).toBe(126)
+    expect(balanced.meals[0].items[1].grams).toBeLessThan(150)
+  })
+
+  it("counts the locked item's macros in full toward the day's totals", () => {
+    const day = makeDay([{ recipe: roti, grams: 126, gramsLocked: true }])
+    const balanced = balanceDayToTargets(day, { kcal: 2000, proteinG: 100, carbsG: 250, fatG: 60, fiberG: 30 })
+    expect(balanced.totals.proteinG).toBeCloseTo(8 * 1.26, 6)
+    expect(balanced.totals.carbsG).toBeCloseTo(60 * 1.26, 6)
+  })
+
+  it("never reports a locked item as capped — sitting at a limit there is an instruction, not a solver failure", () => {
+    const day = makeDay([
+      { recipe: roti, grams: 126, gramsLocked: true },
+      { recipe: dal, grams: 150 },
+    ])
+    const balanced = balanceDayToTargets(day, { kcal: 1200, proteinG: 60, carbsG: 150, fatG: 35, fiberG: 25 })
+    expect(balanced.cappedRecipeNames).not.toContain("Jowar Roti")
+  })
+
+  it("leaves an all-locked day exactly as given", () => {
+    const day = makeDay([
+      { recipe: roti, grams: 126, gramsLocked: true },
+      { recipe: dal, grams: 137, gramsLocked: true },
+    ])
+    const balanced = balanceDayToTargets(day, { kcal: 2000, proteinG: 100, carbsG: 250, fatG: 60, fiberG: 30 })
+    expect(balanced.meals[0].items.map((i) => i.grams)).toEqual([126, 137])
   })
 })

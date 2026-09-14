@@ -169,8 +169,11 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
                   <TableCell className="whitespace-normal align-top">
                     <ComposedMealCell
                       items={meal.items}
+                      mealId={meal.id}
+                      slotLabel={meal.slotLabel}
                       region={plan.region}
                       editable={editable}
+                      canAddItems={plan.engine === "recipe"}
                       archetypeName={meal.archetypeName}
                       archetypeDishFamilyIdsByExchangeType={meal.archetypeDishFamilyIdsByExchangeType}
                       dishCombinations={dishCombinations}
