@@ -15,6 +15,7 @@ import type { Answers } from "../src/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "../src/lib/counselling/roadmap"
 import { clientRecipeAllergenTagsFromAnswers, dietTypeFromAnswers } from "../src/lib/plan/client-profile-from-answers"
 import { eligibleCuisinesFor, templateRegionForCuisine, type RecipeCuisine } from "../src/lib/foods/recipe-cuisine-mapping"
+import { recipeSeasonMatches } from "../src/lib/foods/recipe-season-mapping"
 import { selectRecipes, RecipeSelectionRejectedError } from "../src/lib/plan/recipe-selector"
 import { buildInitialMessages } from "../src/lib/plan/recipe-prompt"
 import type { ClientRecipeConstraints } from "../src/lib/plan/recipe-plausibility-validate"
@@ -94,7 +95,7 @@ async function main() {
   const filtered = filterRecipePool(cuisineRows.filter(
       (r) =>
         r.dietTypes.includes(dietType) &&
-        (r.season === "all_year" || r.season === season) &&
+        recipeSeasonMatches(r.season, season) &&
         !r.allergenTags.some((t) => clientRecipeAllergenTags.includes(t))
     ))
   console.log(`Eligible recipe pool: ${filtered.length} / ${cuisineRows.length} cuisine-matched / ${await db.$count(recipes)} total`)

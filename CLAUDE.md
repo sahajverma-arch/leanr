@@ -1112,9 +1112,27 @@ assumed**:
   `raw_csv_row`, never in `recipes.cuisine` itself) that permanently folds them into the
   always-eligible pool.
 - `recipe-season-mapping.ts` — `Winter`/`Summer`/`All Season` → `winter`/`summer`/`all_year`. No
-  `monsoon` tag exists in this data at all — a monsoon-week generation's eligible pool is exactly the
-  `all_year` recipes (452 of 1222), an accepted narrowing, not a fabricated claim, same discipline
-  CLAUDE.md's exchange-system seasonal tagging already established.
+  `monsoon` tag exists in this data at all. This was originally recorded here as "an accepted
+  narrowing, not a fabricated claim" — a monsoon week simply drew from the `all_year` rows. **That
+  was wrong, and it was measured wrong (2026-09-14).** `season.ts` calls July-October `monsoon`, a
+  third of the year, and because no recipe can ever carry that tag the filter
+  `r.season === "all_year" || r.season === season` collapses to "all_year only" and silently hides
+  everything else. On a real North Indian non-vegetarian plan (week of 2026-09-09) that was **599 of
+  1015 eligible dishes gone — 410 offered in the swap picker instead of 1007**. Found because a
+  dietitian could not find Acuri Eggs or Acv Chicken Sandwich in the picker; both are active,
+  `General` cuisine, `non_vegetarian`, allergen-clear, and tagged `Winter`. Nothing reported the
+  narrowing, because a 410-recipe pool is not obviously wrong from the inside.
+  The rule is now `recipeSeasonMatches()`: **a season the data cannot express does not narrow
+  anything.** `NARROWING_SEASONS` is derived from `SEASON_MAP`'s own values rather than restated, so
+  a future CSV that gains a real `Monsoon` value starts narrowing monsoon weeks with no other change.
+  This is the same "degrade to the unfiltered pool" pattern the exchange engine's eligibility layers
+  already use, and it is the honest reading: claiming a Winter dish is wrong for a monsoon week is a
+  real clinical claim, and this dataset never made it. The bare expression had been **copied at five
+  call sites** (generation, plan edits, and three dev scripts) — which is how four months of the year
+  came to hide most of the catalogue without anything noticing; all five now call the one function,
+  and `assertRecipeAllowed()`'s write-side gate uses it too, so the picker and the write can never
+  disagree about what is offerable. Note this widens the pool for **generation** as well, not just
+  swaps — during monsoon the generator had been composing from the same 40% slice.
 - `recipe-allergen-normalize.ts` — the real `Allergen` column is genuinely messy (315 distinct raw
   combinations of ~15 atomic concepts, real casing/typo drift: `"CITRUS"` vs `"Citrus"`,
   `"Onion/Garli"` vs `"Onion/Garlic"`, `"Lactos"` vs `"Lactose"`) — normalized to a fixed tag

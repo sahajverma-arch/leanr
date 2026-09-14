@@ -43,6 +43,8 @@ import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { env } from "@/lib/env"
 import { REGIONS, SEASONS } from "@/lib/foods/vocab"
 import { eligibleCuisinesFor, RECIPE_CUISINES, templateRegionForCuisine, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
+import { recipeSeasonMatches } from "@/lib/foods/recipe-season-mapping"
+import type { Season } from "@/lib/foods/vocab"
 import {
   ClientProfileError,
   clientAllergensFromAnswers,
@@ -298,7 +300,7 @@ interface RecipeEngineContext {
   slots: MealSlotInfo[]
   weekStartDate: Date
   weekEndDate: Date
-  season: string
+  season: Season
   dailyTarget: DailyRecipeTarget
   /** Snapshotted onto the plan so a later edit to the prescription cannot rewrite history. */
   supplement: PrescribedSupplement | null
@@ -357,7 +359,7 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
   const eligible = cuisineRows.filter(
     (r) =>
       r.dietTypes.includes(ctx.dietType) &&
-      (r.season === "all_year" || r.season === ctx.season) &&
+      recipeSeasonMatches(r.season, ctx.season) &&
       !r.allergenTags.some((t) => ctx.clientRecipeAllergenTags.includes(t))
   )
   // Drop rows that declare no energy at all, and dishes far fattier than

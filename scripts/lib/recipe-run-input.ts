@@ -17,6 +17,7 @@ import type { Answers } from "../../src/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "../../src/lib/counselling/roadmap"
 import { clientRecipeAllergenTagsFromAnswers, dietTypeFromAnswers } from "../../src/lib/plan/client-profile-from-answers"
 import { eligibleCuisinesFor, templateRegionForCuisine, type RecipeCuisine } from "../../src/lib/foods/recipe-cuisine-mapping"
+import { recipeSeasonMatches } from "../../src/lib/foods/recipe-season-mapping"
 import { filterRecipePool } from "../../src/lib/foods/recipe-pool-filters"
 import { RECIPE_PIPELINE_COLUMNS } from "../../src/lib/plan/recipe-types"
 import { buildRecipeIndex, type RecipeIndex } from "../../src/lib/plan/recipe-grounding"
@@ -82,7 +83,7 @@ export async function buildRecipeRunContext(
   const eligible = cuisineRows.filter(
     (r) =>
       r.dietTypes.includes(dietType) &&
-      (r.season === "all_year" || r.season === season) &&
+      recipeSeasonMatches(r.season, season) &&
       !r.allergenTags.some((t) => clientAllergenTags.includes(t))
   )
   // Same pool filters the production route applies, so a script run stays

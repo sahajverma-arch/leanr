@@ -35,6 +35,8 @@ import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 import { eligibleCuisinesFor, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
+import { recipeSeasonMatches } from "@/lib/foods/recipe-season-mapping"
+import type { Season } from "@/lib/foods/vocab"
 import { clientRecipeAllergenTagsFromAnswers } from "@/lib/plan/client-profile-from-answers"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { deviationOf, rebalanceDay, weeklyAverageOf, type StoredRecipeMeal } from "./recipe-swap"
@@ -72,7 +74,7 @@ export interface RecipePlanContext {
    * edit is allowed to put on the plate.
    */
   allergenTags: string[]
-  season: string
+  season: Season
   constraints: ClientRecipeConstraints
 }
 
@@ -159,7 +161,7 @@ export async function eligibleRecipesForPlan(ctx: RecipePlanContext): Promise<Re
   return rows.filter(
     (r) =>
       r.dietTypes.includes(ctx.dietType) &&
-      (r.season === "all_year" || r.season === ctx.season) &&
+      recipeSeasonMatches(r.season, ctx.season) &&
       !r.allergenTags.some((t) => ctx.allergenTags.includes(t)) &&
       r.kcalPer100G > 0
   )
@@ -174,7 +176,10 @@ export function assertRecipeAllowed(recipe: RecipeForPipeline, ctx: RecipePlanCo
   if (blocked.length > 0) {
     throw new PlanEditError(`${recipe.name} contains ${blocked.join(", ")}, which this client must avoid.`)
   }
-  if (recipe.season !== "all_year" && recipe.season !== ctx.season) {
+  // Must use the SAME rule the picker used. Checking `recipe.season !== ctx.season`
+  // here would reject exactly the dishes the monsoon relaxation just made
+  // offerable — the picker would list them and the write would refuse them.
+  if (!recipeSeasonMatches(recipe.season, ctx.season)) {
     throw new PlanEditError(`${recipe.name} is a ${recipe.season} recipe and this plan's week is ${ctx.season}.`)
   }
   if (recipe.kcalPer100G <= 0) {

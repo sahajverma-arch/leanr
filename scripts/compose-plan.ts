@@ -25,6 +25,7 @@ import * as fs from "fs"
 import { db } from "../src/db"
 import { mealTemplates, recipeAliases, recipes } from "../src/db/schema"
 import { eligibleCuisinesFor, templateRegionForCuisine, type RecipeCuisine } from "../src/lib/foods/recipe-cuisine-mapping"
+import { recipeSeasonMatches } from "../src/lib/foods/recipe-season-mapping"
 import { balanceDayToTargets } from "../src/lib/plan/recipe-balancer"
 import { blockingProblems, diagnoseDay } from "../src/lib/plan/recipe-day-diagnosis"
 import { buildRecipeIndex, groundSelection } from "../src/lib/plan/recipe-grounding"
@@ -80,7 +81,7 @@ async function build() {
 
   const eligibleCuisines = eligibleCuisinesFor(cuisine)
   const rows = await db.select().from(recipes).where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisines)))
-  const filtered = rows.filter((r) => r.dietTypes.includes(dietType) && (r.season === "all_year" || r.season === season))
+  const filtered = rows.filter((r) => r.dietTypes.includes(dietType) && recipeSeasonMatches(r.season, season))
 
   const forPrompt: RecipeForPrompt[] = filtered.map((r) => ({
     id: r.id, name: r.name, category: r.category, consistency: r.consistency,
