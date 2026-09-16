@@ -26,6 +26,7 @@ import {
 } from "@/lib/plan/recipe-quantity-step"
 import type { PlanViewItem, RecipeItemEditing } from "@/lib/plan/plan-view-model"
 
+import { IngredientPanel } from "./ingredient-panel"
 import { RecipeCandidateList } from "./recipe-candidate-list"
 import { SwapItemButton } from "./swap-item-button"
 
@@ -162,11 +163,16 @@ function RecipeItemEditDialog({
         <Tabs defaultValue="quantity">
           <TabsList>
             <TabsTrigger value="quantity">Quantity</TabsTrigger>
+            <TabsTrigger value="ingredients">Ingredients</TabsTrigger>
             <TabsTrigger value="swap" onClick={loadCandidates}>
               Swap
             </TabsTrigger>
             <TabsTrigger value="remove">Remove</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="ingredients">
+            <IngredientPanel itemId={item.id} editable={editable} />
+          </TabsContent>
 
           <TabsContent value="quantity" className="space-y-3 pt-3">
             <div className="flex items-center gap-3">

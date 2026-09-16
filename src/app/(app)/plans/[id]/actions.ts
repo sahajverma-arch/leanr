@@ -19,6 +19,15 @@ import {
   PlanEditError,
   recomputePlanAfterEdit,
 } from "@/lib/plan/recipe-plan-edit"
+import { setIngredientQuantity } from "@/lib/plan/ingredient-edit"
+import {
+  clearItemOverrides,
+  loadItemPortion,
+  toIngredientState,
+  upsertItemOverride,
+  writePortionToItem,
+  type PlanItemIngredientState,
+} from "@/lib/plan/plan-item-ingredients"
 import { macroProfileTags, type MacroProfileTag } from "@/lib/plan/recipe-macro-profile"
 import { MANUAL_GRAMS_CEILING_G, MANUAL_GRAMS_FLOOR_G } from "@/lib/plan/recipe-quantity-step"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
@@ -324,6 +333,97 @@ export async function setPlanItemGrams(itemId: string, grams: number): Promise<v
       .update(dietPlanRecipeItems)
       .set({ grams: parsedGrams, gramsLocked: true })
       .where(eq(dietPlanRecipeItems.id, itemId))
+    await recomputePlanAfterEdit(tx, loaded.ctx)
+  })
+
+  revalidatePath(`/plans/${loaded.ctx.planId}`)
+}
+
+/**
+ * The ingredient breakdown of one plan item, with each ingredient's current
+ * amount and what it contributes.
+ *
+ * Returns `available: false` — never an error — when this recipe is not in the
+ * ingredient trial, which is the honest answer for 259 of the 1222 recipes.
+ * The panel says so rather than listing a breakdown that cannot be trusted.
+ *
+ * The amounts are what is on THIS plate, scaled to the item's own weight, not
+ * one nominal portion of the recipe.
+ */
+export async function getPlanItemIngredients(itemId: string): Promise<PlanItemIngredientState> {
+  await requireStaffUser()
+  itemId = uuidSchema.parse(itemId)
+
+  const loaded = await loadRecipeItemContext(itemId)
+  if (!loaded) throw new PlanEditError("Item not found, or this plan's items are not editable.")
+
+  const [recipe] = await db
+    .select({ name: recipes.name })
+    .from(recipes)
+    .where(eq(recipes.id, loaded.item.recipeId))
+    .limit(1)
+
+  const portion = await loadItemPortion(db, itemId, loaded.item.recipeId, loaded.item.grams)
+  return toIngredientState(itemId, recipe?.name ?? "", portion, loaded.item.gramsLocked)
+}
+
+/**
+ * Change how much of one ingredient is in one plan item — "make it 3 eggs".
+ *
+ * The macro consequence is exact: it comes from that ingredient's own verified
+ * per-100g. The dish's plated weight moves by the added raw grams scaled by
+ * the recipe's yield factor, which is an estimate, so the gram figure can
+ * drift slightly while every macro stays correct.
+ *
+ * Like every other edit on this page, the whole day is re-balanced afterwards
+ * and the plan's weekly average, deviation and warnings are recomputed.
+ *
+ * A dish whose weight the dietitian pinned keeps that weight: the edit changes
+ * what is in those grams and nothing else. See writePortionToItem.
+ */
+export async function setPlanItemIngredientQuantity(
+  itemId: string,
+  ingredientId: string,
+  quantity: number,
+): Promise<void> {
+  await requireStaffUser()
+  itemId = uuidSchema.parse(itemId)
+  ingredientId = uuidSchema.parse(ingredientId)
+  const parsedQuantity = z.number().finite().min(0).max(1000).parse(quantity)
+
+  const loaded = await loadRecipeItemContext(itemId)
+  if (!loaded) throw new PlanEditError("Item not found, or this plan's items are not editable.")
+  assertEditable(loaded.ctx)
+
+  await db.transaction(async (tx) => {
+    const portion = await loadItemPortion(tx, itemId, loaded.item.recipeId, loaded.item.grams)
+    if (!portion) throw new PlanEditError("This dish has no ingredient breakdown to edit.")
+
+    const name = [...portion.idByName.entries()].find(([, id]) => id === ingredientId)?.[0]
+    if (!name) throw new PlanEditError("That ingredient is not part of this dish.")
+
+    const edited = setIngredientQuantity(portion.portion, name, parsedQuantity)
+    await upsertItemOverride(tx, itemId, ingredientId, parsedQuantity)
+    await writePortionToItem(tx, itemId, edited.recipe, loaded.item.gramsLocked)
+    await recomputePlanAfterEdit(tx, loaded.ctx)
+  })
+
+  revalidatePath(`/plans/${loaded.ctx.planId}`)
+}
+
+/** Drop every ingredient change on an item and return it to the dish as generated. */
+export async function resetPlanItemIngredients(itemId: string): Promise<void> {
+  await requireStaffUser()
+  itemId = uuidSchema.parse(itemId)
+
+  const loaded = await loadRecipeItemContext(itemId)
+  if (!loaded) throw new PlanEditError("Item not found, or this plan's items are not editable.")
+  assertEditable(loaded.ctx)
+
+  await db.transaction(async (tx) => {
+    await clearItemOverrides(tx, itemId)
+    const portion = await loadItemPortion(tx, itemId, loaded.item.recipeId, loaded.item.grams)
+    if (portion) await writePortionToItem(tx, itemId, portion.portion, loaded.item.gramsLocked)
     await recomputePlanAfterEdit(tx, loaded.ctx)
   })
 

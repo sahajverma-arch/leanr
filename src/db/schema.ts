@@ -796,3 +796,172 @@ export const planGenerationRequests = pgTable("plan_generation_requests", {
 })
 
 export type PlanGenerationRequest = typeof planGenerationRequests.$inferSelect
+
+/* ---------------------------------------------------------------------------
+ * INGREDIENT LAYER (trial, 2026-09-15)
+ *
+ * Four tables, purely additive: nothing above this block is altered, so this
+ * whole layer drops with four DROP TABLEs and nothing else to unpick. That is
+ * deliberate — it is on trial and must be cheap to remove.
+ *
+ * Extracted from the `Calculation` audit trail in
+ * src/db/seed-data/recipe_ingredients.csv (see recipe-calculation-parser.ts),
+ * and seeded ONLY for recipes measured as clean: ingredients that parse, carry
+ * macros, sum to the recipe's own stated totals, and have a plausible yield.
+ * A recipe outside that set simply has no rows here, and every reader degrades
+ * to "no ingredient breakdown available" — the same graceful-narrowing pattern
+ * the eligibility layers already use.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * One row per distinct ingredient, with its verified per-100g nutrition.
+ *
+ * Measured across the whole source file, this table is self-consistent: 0 of
+ * 345 ingredients disagreed with themselves on kcal per 100 g across every
+ * recipe that uses them. So `name` is a safe natural key.
+ */
+export const ingredients = pgTable("ingredients", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** Lowercased, exactly as the source spells it. The join key. */
+  name: text("name").notNull().unique(),
+  carbsPer100G: numeric("carbs_per_100g", { mode: "number" }).notNull(),
+  proteinPer100G: numeric("protein_per_100g", { mode: "number" }).notNull(),
+  fatPer100G: numeric("fat_per_100g", { mode: "number" }).notNull(),
+  fiberPer100G: numeric("fiber_per_100g", { mode: "number" }).notNull(),
+  /**
+   * The source's OWN stated kcal, not an Atwater recomputation.
+   *
+   * A deliberate departure from `recipes.kcal_per_100g`, which is generated
+   * precisely so it cannot drift from its macros. Here the stated value has to
+   * be kept, because recipe totals were built from it: replacing it would break
+   * the reconciliation that qualifies a recipe for this layer in the first
+   * place. `kcalAtwater` below exposes the disagreement instead of hiding it.
+   */
+  kcalPer100G: numeric("kcal_per_100g", { mode: "number" }).notNull(),
+  /**
+   * Atwater from this row's own macros. Generated, so it cannot be wrong.
+   * 26 of 377 ingredients disagree with `kcalPer100G` by more than 10 percent
+   * (cocoa, roasted chana, soybean dal, flaxseed…); this column is how that
+   * cleanup gets audited rather than argued about.
+   */
+  kcalAtwater: numeric("kcal_atwater", { mode: "number" })
+    .notNull()
+    .generatedAlwaysAs(sql`round(protein_per_100g * 4 + carbs_per_100g * 4 + fat_per_100g * 9, 2)`),
+  /** Recipes referencing this ingredient at seed time — prioritises cleanup by blast radius. */
+  usageCount: integer("usage_count").notNull().default(0),
+  /**
+   * Set when this row's nutrition is known-bad or ambiguous, holding every
+   * recipe that uses it out of the trial. Null means trusted. e.g. "beans"
+   * carries cooked-rajma values but is used to mean green beans.
+   */
+  quarantineReason: text("quarantine_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+export type Ingredient = typeof ingredients.$inferSelect
+export type NewIngredient = typeof ingredients.$inferInsert
+
+/**
+ * What ONE unit of an ingredient weighs — "1 onion = 150 g", "1 tsp oil = 5 g".
+ *
+ * Also measurably clean in the source: 0 of 348 (ingredient, unit) pairs
+ * disagreed on grams. This is what lets a dietitian say "3 eggs" rather than
+ * "150 g of egg".
+ */
+export const ingredientUnits = pgTable("ingredient_units", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ingredientId: uuid("ingredient_id")
+    .notNull()
+    .references(() => ingredients.id, { onDelete: "cascade" }),
+  /** "piece" | "tsp" | "tbsp" | "cup" | "ml" — the only units this data uses. */
+  unit: text("unit").notNull(),
+  gramsPerUnit: numeric("grams_per_unit", { mode: "number" }).notNull(),
+})
+
+export type IngredientUnit = typeof ingredientUnits.$inferSelect
+export type NewIngredientUnit = typeof ingredientUnits.$inferInsert
+
+/**
+ * One ingredient line of one recipe, at BATCH scale exactly as the source
+ * states it. Re-basing to a single portion happens in code at read time
+ * (ingredient-edit.ts's toPortion), never here — storing the batch keeps this
+ * table a faithful record of the source rather than a derived view.
+ */
+export const recipeIngredients = pgTable("recipe_ingredients", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  recipeId: uuid("recipe_id")
+    .notNull()
+    .references(() => recipes.id, { onDelete: "cascade" }),
+  ingredientId: uuid("ingredient_id")
+    .notNull()
+    .references(() => ingredients.id),
+  /** "piece" | "measure" | "direct" — see recipe-calculation-parser.ts. */
+  kind: text("kind").notNull(),
+  /** Units for piece/measure, grams for direct. Fractional is normal and correct. */
+  quantity: numeric("quantity", { mode: "number" }).notNull(),
+  unit: text("unit"),
+  gramsPerUnit: numeric("grams_per_unit", { mode: "number" }),
+  /** Grams this ingredient contributes to the whole batch. */
+  grams: numeric("grams", { mode: "number" }).notNull(),
+  /** Source order — the order a cook would read the dish in. */
+  displayOrder: integer("display_order").notNull(),
+})
+
+export type RecipeIngredient = typeof recipeIngredients.$inferSelect
+export type NewRecipeIngredient = typeof recipeIngredients.$inferInsert
+
+/**
+ * Per-recipe scaling constants that turn the batch above into one plated
+ * portion, plus the audit numbers that justified admitting the recipe.
+ */
+export const recipeIngredientProfiles = pgTable("recipe_ingredient_profiles", {
+  recipeId: uuid("recipe_id")
+    .primaryKey()
+    .references(() => recipes.id, { onDelete: "cascade" }),
+  /** Source `Servings`. Routinely fractional, which is why a portion can hold 1.33 eggs. */
+  servings: numeric("servings", { mode: "number" }).notNull(),
+  /** Declared plated weight of ONE portion. */
+  portionGrams: numeric("portion_grams", { mode: "number" }).notNull(),
+  /** Sum of the batch's raw ingredient grams. */
+  rawBatchGrams: numeric("raw_batch_grams", { mode: "number" }).notNull(),
+  /**
+   * (servings × portionGrams) / rawBatchGrams. Converts added raw grams into
+   * added plated grams. Estimated, never exact — it stands in for cooking water
+   * and for un-itemised salt, spices and water.
+   */
+  yieldFactor: numeric("yield_factor", { mode: "number" }).notNull(),
+  /** Worst per-macro gap between summed ingredients and the recipe's stated totals, as a fraction. */
+  reconciliationGap: numeric("reconciliation_gap", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+export type RecipeIngredientProfile = typeof recipeIngredientProfiles.$inferSelect
+export type NewRecipeIngredientProfile = typeof recipeIngredientProfiles.$inferInsert
+
+/**
+ * A dietitian's ingredient change on ONE plan item — "this client's Tuesday
+ * breakfast gets 3 eggs, not 2".
+ *
+ * Only edited ingredients get a row; everything untouched is read from
+ * `recipe_ingredients` at display time. So an unedited item stores nothing and
+ * behaves exactly as it did before this layer existed.
+ *
+ * Per plan item, never global — editing a dish here must not reach into other
+ * clients' plans, the same rule `diet_plan_recipe_items`' macro snapshots
+ * already enforce for nutrition.
+ */
+export const dietPlanRecipeItemIngredients = pgTable("diet_plan_recipe_item_ingredients", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  dietPlanRecipeItemId: uuid("diet_plan_recipe_item_id")
+    .notNull()
+    .references(() => dietPlanRecipeItems.id, { onDelete: "cascade" }),
+  ingredientId: uuid("ingredient_id")
+    .notNull()
+    .references(() => ingredients.id),
+  /** The dietitian's value, in the ingredient's own unit. 0 removes it from the dish. */
+  quantity: numeric("quantity", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+export type DietPlanRecipeItemIngredient = typeof dietPlanRecipeItemIngredients.$inferSelect
+export type NewDietPlanRecipeItemIngredient = typeof dietPlanRecipeItemIngredients.$inferInsert

@@ -1547,6 +1547,84 @@ exchange type, same count" makes quantity editing meaningless by construction. T
 affordance is gated on `plan.engine === "recipe"` for the same reason. An approved plan is locked to
 every edit, as it already was to swaps.
 
+### Ingredient-level editing (trial, 2026-09-15)
+
+The edits above move a whole dish. This one moves what is *inside* it — "make it 3 eggs, not 2" —
+with an exact macro consequence. On trial: four additive tables, removable with four `DROP TABLE`s
+and nothing else to unpick (`20260915120000_ingredient_layer_trial.sql` carries the drop block in
+its own footer).
+
+**The data was already there, trapped in a text field.** `recipe_ingredients.csv`'s `Calculation`
+column is a machine-written audit trail left by whatever produced the source nutrition, spelling out
+per ingredient both the quantity→grams conversion and the macros those grams contribute
+(`egg → 2 × 50g = 100g | egg → Carbs: 0.7, Protein: 12.6, ...`). `recipe-calculation-parser.ts`
+reads it. Three quantity shapes appear and nothing else: `piece`, `measure` (tsp/tbsp/cup/ml), and
+`direct` grams. The source's OWN failures are in that column as plain text too
+(`Ingredient not found in nutrition sheet:`), and they are reported as `problems`, never skipped — a
+recipe that could not be fully costed must not look identical to one that was.
+
+**Why this is safe to add: it reproduces today's numbers rather than replacing them.** A recipe is
+stored as a batch plus `Servings` plus a declared portion weight, and today's live
+`recipes.*_per_100g` is `batch / (Servings × portion) × 100`. Re-basing that batch to one portion
+divides numerator and denominator by the same `Servings`, so it lands on the identical figure. That
+is an arithmetic identity, but an identity is only worth the data it runs on, so
+`scripts/verify-ingredient-layer.ts` checks it against every admitted recipe rather than trusting
+the argument. Measured on the live database: **963 admitted recipes, 3,801 ingredient lines, 303
+ingredients, worst per-100g disagreement 0.10 g against a 0.15 budget, zero recipes disagreeing.**
+The layer is descriptive until somebody actually edits something.
+
+**Admission is deliberately narrow** (`seed-ingredients.ts`): the recipe must exist in `recipes`,
+parse with zero problems, carry macros on every ingredient, reconcile to its own stated totals
+within 1%, have a yield factor inside 0.4–3.0, and use no quarantined ingredient. 963 of 1222 get
+in; the other 259 have no rows and every reader degrades to "no ingredient breakdown available" —
+the same graceful narrowing the eligibility layers already use. The quarantine list is measured, not
+guessed: `french beans` carries dried-rajma nutrition (350 kcal/100 g for a fresh vegetable), which
+is why the canonical demo dish Egg Bhurji is *not* in the trial. Fix the ingredient row, re-seed,
+and the dish admits itself.
+
+**Exact vs. estimated, and it is the safe way round.** The macro delta of an edit is EXACT — it
+comes from the ingredient's own per-100g, and the source is measurably self-consistent about those
+(0 of 345 ingredients disagree with themselves on kcal/100 g; 0 of 348 (ingredient, unit) pairs
+disagree on grams). The plated WEIGHT after an edit is ESTIMATED: added raw grams are scaled by the
+recipe's `yieldFactor`, a per-recipe constant recovered from the data that stands in for cooking
+water and for un-itemised salt and spices. So if the yield is off, the gram figure drifts while
+every clinical number stays exact.
+
+**Changing one ingredient changes only that ingredient.** The onion does not grow because the egg
+did. That models "same dish, more egg", which is the instruction the feature exists to serve;
+scaling the whole dish together is a different clinical intent and is deliberately not implemented
+rather than guessed at.
+
+**Amounts are shown at the PLATED scale, and getting this wrong was a real bug caught before
+commit.** The first implementation listed one declared portion and, on every edit, wrote the item's
+weight back as that one portion. But the balancer plates a dish at whatever the day needs: measured
+across 286 real plan items, **only 40% sit within 5% of one declared portion** and plenty sit at 2x
+or 3x (Jaun Stuffed Roti plated at 345 g against a declared 115 g). So the panel listed a third of
+the food actually being served, and editing any ingredient silently cut the dish from 345 g to
+115 g. `loadItemPortion()` now divides the batch by `servings / portions` rather than by `servings`,
+which lands on the plated amount directly; `yieldFactor` and per-100g are unchanged by that scaling,
+as they must be, since both describe the dish rather than the serving.
+
+**A locked weight outranks an ingredient edit.** `recipe-balancer.ts` holds a `gramsLocked` item's
+grams exactly, so the original code's unconditional grams write did the worst possible thing to a
+pinned dish: it destroyed the dietitian's hand-set number and then froze the replacement, with the
+edit appearing to work. `writePortionToItem()` now skips the grams write entirely when the item is
+locked and updates only the per-100g snapshots — a locked dish keeps its weight and changes what is
+in those grams. The panel says so on the item.
+
+**A stored override is the number the dietitian typed**, in the ingredient's own unit at plated
+scale. Only edited ingredients get a row (`diet_plan_recipe_item_ingredients`), so an untouched item
+stores nothing and reads back byte-identically to what generation produced. Per plan item, never
+global — the same rule `diet_plan_recipe_items`' macro snapshots already enforce for nutrition. An
+override naming an ingredient the recipe no longer has is skipped rather than thrown on, since the
+recipe could have been re-seeded since.
+
+An edit rewrites the item's four snapshot columns and then re-balances the day through the same
+`recomputePlanAfterEdit()` every other edit uses, so there is one definition of what a plan edit
+recomputes. No model is involved anywhere in this path — THE ONE RULE is untouched, and this layer
+never proposes a number at all: every figure is read from verified per-100g data or computed in
+code.
+
 ### Rollout
 
 `RECIPE_ENGINE_ENABLED` defaults off everywhere. Both engines coexist in `route.ts`, gated by one

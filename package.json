@@ -15,6 +15,7 @@
     "seed:recipes": "tsx --env-file=.env.local src/db/seed-recipes.ts",
     "seed:knowledge": "tsx --env-file=.env.local src/db/seed-knowledge.ts",
     "seed:diet-plan-examples": "tsx --env-file=.env.local src/db/seed-diet-plan-examples.ts",
+    "seed:ingredients": "tsx --env-file=.env.local src/db/seed-ingredients.ts",
     "seed:demo": "tsx --env-file=.env.local src/db/seed-demo-clients.ts"
   },
   "dependencies": {
