@@ -16,6 +16,7 @@ import { buildDayRetryMessages, buildInitialMessages, type PromptMessage } from 
 import { llmRecipeDaySchema, llmRecipeSelectionSchema } from "./recipe-schema"
 import { buildRecipeIndex, groundSelection, type RecipeIndex } from "./recipe-grounding"
 import { balanceDayToTargets } from "./recipe-balancer"
+import { buildRepairPool, repairDay, repairWeek, type RepairPool, type RepairSwap } from "./recipe-repair"
 import { describeMacroProblems, isRecipeDayOffTarget, isRecipeWeekOffTarget, RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
 import { computeWeeklyAverage, pickBestWeek, weeklyDeviationScore } from "./recipe-week-score"
 import { buildRecipeWarnings, offTargetSummary } from "./recipe-warnings"
@@ -54,6 +55,17 @@ export interface SelectRecipesOptions {
   bestOfN?: number
 }
 
+/**
+ * Everything the deterministic repair stage needs, built once per
+ * generation and threaded through every path that grounds a day — so the
+ * best-of-N path, the per-day-retry path and a single day retry cannot
+ * drift apart on whether a composed day gets repaired at all.
+ */
+interface RepairContext {
+  pool: RepairPool
+  constraints: ClientRecipeConstraints
+}
+
 export class RecipeSelectionRejectedError extends Error {
   constructor(
     message: string,
@@ -89,6 +101,17 @@ function extractJson(raw: string): unknown {
   return JSON.parse(raw.slice(start, end + 1))
 }
 
+/** How many days of the given week each recipe appears on — the variety cap's own unit, and the repair's weekly budget. */
+function countRecipeUse(days: GroundedRecipeDay[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const day of days) {
+    for (const meal of day.meals) {
+      for (const item of meal.items) counts.set(item.recipe.name, (counts.get(item.recipe.name) ?? 0) + 1)
+    }
+  }
+  return counts
+}
+
 function dayNeedsRetry(day: GroundedRecipeDay, input: RecipeSelectorInput, constraints: ClientRecipeConstraints, daysNeedingVarietyRetry: Set<number>): boolean {
   return (
     isRecipeDayOffTarget(day.totals, input.dailyTarget) ||
@@ -111,19 +134,25 @@ async function callModel(messages: PromptMessage[]): Promise<{ rawResponse: stri
 }
 
 /**
- * One whole-week call: model -> parse -> ground -> balance. Returns null on
- * any failure (empty response, unparseable JSON, schema mismatch), having
- * already emitted its attempt log either way. Shared by both the retry path
- * and the best-of-N path so they cannot drift apart on how a week is built.
+ * One whole-week call: model -> parse -> ground -> balance -> repair.
+ * Returns null on any failure (empty response, unparseable JSON, schema
+ * mismatch), having already emitted its attempt log either way. Shared by
+ * both the retry path and the best-of-N path so they cannot drift apart on
+ * how a week is built.
+ *
+ * The repair's swaps travel WITH the week they belong to rather than into a
+ * shared list: best-of-N runs N of these concurrently and keeps one, so a
+ * shared list would report the losing candidates' swaps too.
  */
 async function attemptWholeWeek(
   input: RecipeSelectorInput,
   index: RecipeIndex,
+  repair: RepairContext,
   messages: PromptMessage[],
   promptHash: string,
   attemptNumber: number,
   onAttempt?: (log: RecipeAttemptLog) => void
-): Promise<GroundedRecipeDay[] | null> {
+): Promise<{ days: GroundedRecipeDay[]; swaps: RepairSwap[] } | null> {
   let rawResponse: string | null = null
   let latencyMs = 0
   let validationResult: { ok: boolean; errors: string[] } = { ok: false, errors: [] }
@@ -139,9 +168,13 @@ async function attemptWholeWeek(
       const parsed = llmRecipeSelectionSchema.parse(extractJson(rawResponse))
       const grounded = groundSelection(parsed, index)
       const balanced = grounded.days.map((day) => balanceDayToTargets(day, input.dailyTarget))
+      // Deterministic macro repair, before anything judges this week. The
+      // model named the dishes; code fixes the ones whose macros cannot
+      // reach the target however their grams are solved. No extra call.
+      const repaired = repairWeek(balanced, input.dailyTarget, repair.pool, repair.constraints)
       validationResult = { ok: true, errors: [] }
       onAttempt?.({ attemptNumber, dayIndex: null, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
-      return balanced
+      return repaired
     }
   } catch (err) {
     validationResult = { ok: false, errors: [err instanceof Error ? err.message : String(err)] }
@@ -160,9 +193,10 @@ async function attemptWholeWeek(
 async function runBestOfNPhase(
   input: RecipeSelectorInput,
   index: RecipeIndex,
+  repair: RepairContext,
   n: number,
   onAttempt?: (log: RecipeAttemptLog) => void
-): Promise<{ days: GroundedRecipeDay[]; generationMode: "ai" | "fallback"; modelUsed: string | null; attempts: number }> {
+): Promise<{ days: GroundedRecipeDay[]; generationMode: "ai" | "fallback"; modelUsed: string | null; attempts: number; swaps: RepairSwap[] }> {
   const messages = buildInitialMessages(input)
   const promptHash = hashString(JSON.stringify(messages))
 
@@ -179,11 +213,14 @@ async function runBestOfNPhase(
   // swallows its own failures and returns null, so one bad call cannot
   // reject the batch.
   const settled = await Promise.all(
-    Array.from({ length: n }, (_, i) => attemptWholeWeek(input, index, messages, promptHash, i + 1, onAttempt))
+    Array.from({ length: n }, (_, i) => attemptWholeWeek(input, index, repair, messages, promptHash, i + 1, onAttempt))
   )
-  const candidates = settled.filter((days): days is GroundedRecipeDay[] => days !== null)
+  const candidates = settled.filter((week): week is { days: GroundedRecipeDay[]; swaps: RepairSwap[] } => week !== null)
 
-  const best = pickBestWeek(candidates, input.dailyTarget)
+  const best = pickBestWeek(
+    candidates.map((c) => c.days),
+    input.dailyTarget
+  )
   if (best === null) {
     // NO DETERMINISTIC FALLBACK. Confirmed instruction, after a real
     // generation came back from a fallback selector with generationMode
@@ -201,15 +238,19 @@ async function runBestOfNPhase(
       []
     )
   }
-  return { days: best.days, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: candidates.length }
+  // best.index is an index into the array pickBestWeek was handed, which is
+  // candidates in order — so this is the winning week's OWN repair log, not
+  // a merge of every candidate's.
+  return { days: best.days, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: candidates.length, swaps: candidates[best.index].swaps }
 }
 
 async function runWholeWeekPhase(
   input: RecipeSelectorInput,
   index: RecipeIndex,
+  repair: RepairContext,
   maxAttempts: number,
   onAttempt?: (log: RecipeAttemptLog) => void
-): Promise<{ grounded: GroundedRecipeSelection; generationMode: "ai" | "fallback"; modelUsed: string | null; attempts: number }> {
+): Promise<{ grounded: GroundedRecipeSelection; generationMode: "ai" | "fallback"; modelUsed: string | null; attempts: number; swaps: RepairSwap[] }> {
   const messages = buildInitialMessages(input)
   const promptHash = hashString(JSON.stringify(messages))
 
@@ -230,9 +271,12 @@ async function runWholeWeekPhase(
         const selection: RecipeSelection = parsed
         const grounded = groundSelection(selection, index)
         const balancedDays = grounded.days.map((day) => balanceDayToTargets(day, input.dailyTarget))
+        // Same deterministic repair the best-of-N path runs — the per-day
+        // retry loop below then only has to deal with what code could not fix.
+        const repaired = repairWeek(balancedDays, input.dailyTarget, repair.pool, repair.constraints)
         validationResult = { ok: true, errors: [] }
         onAttempt?.({ attemptNumber, dayIndex: null, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
-        return { grounded: { days: balancedDays }, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: attemptNumber }
+        return { grounded: { days: repaired.days }, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: attemptNumber, swaps: repaired.swaps }
       }
     } catch (err) {
       validationResult = { ok: false, errors: [err instanceof Error ? err.message : String(err)] }
@@ -257,11 +301,14 @@ async function runWholeWeekPhase(
 async function retryOneDay(
   input: RecipeSelectorInput,
   index: RecipeIndex,
+  repair: RepairContext,
+  /** The rest of the week, so the repair's weekly variety tally counts what the other days already spend. */
+  otherDays: GroundedRecipeDay[],
   day: GroundedRecipeDay,
   diagnoses: string[],
   attemptNumber: number,
   onAttempt?: (log: RecipeAttemptLog) => void
-): Promise<GroundedRecipeDay | null> {
+): Promise<{ day: GroundedRecipeDay; swaps: RepairSwap[] } | null> {
   const messages = buildDayRetryMessages(input, day, diagnoses)
   const promptHash = hashString(JSON.stringify(messages))
   let rawResponse: string | null = null
@@ -278,9 +325,11 @@ async function retryOneDay(
       const parsedDay = llmRecipeDaySchema.parse(extractJson(rawResponse))
       const grounded = groundSelection({ days: [parsedDay] }, index)
       const balanced = balanceDayToTargets(grounded.days[0], input.dailyTarget)
+      const weeklyCounts = countRecipeUse(otherDays)
+      const repaired = repairDay({ ...balanced, dayIndex: day.dayIndex }, input.dailyTarget, repair.pool, repair.constraints, weeklyCounts)
       validationResult = { ok: true, errors: [] }
       onAttempt?.({ attemptNumber, dayIndex: day.dayIndex, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
-      return { ...balanced, dayIndex: day.dayIndex }
+      return repaired
     }
   } catch (err) {
     validationResult = { ok: false, errors: [err instanceof Error ? err.message : String(err)] }
@@ -298,6 +347,12 @@ export async function selectRecipes(
   const maxWeekAttempts = options.maxWeekAttempts ?? MAX_WEEK_ATTEMPTS
   const maxDayRetries = options.maxDayRetries ?? MAX_DAY_RETRIES
   const index = buildRecipeIndex([...input.allRecipesById.values()], input.aliasRows)
+  // Built ONCE per generation, not per attempt: best-of-N runs N whole-week
+  // attempts concurrently and every one of them repairs against the same
+  // pool. The pool is exactly input.allRecipesById — the same rows the
+  // model was offered — so a repair can never reach a dish the client was
+  // not already eligible for.
+  const repair: RepairContext = { pool: buildRepairPool(input.allRecipesById.values()), constraints }
 
   // BEST-OF-N PATH. A deliberate, confirmed change of acceptance rule for
   // this path only: the week is gated on its WEEKLY AVERAGE, which is
@@ -309,7 +364,7 @@ export async function selectRecipes(
   // Per-day misses become warnings rather than vanishing; see
   // bestOfNWarnings().
   if (options.bestOfN && options.bestOfN > 0) {
-    const { days, generationMode, modelUsed, attempts } = await runBestOfNPhase(input, index, options.bestOfN, options.onAttempt)
+    const { days, generationMode, modelUsed, attempts, swaps } = await runBestOfNPhase(input, index, repair, options.bestOfN, options.onAttempt)
     const weeklyAverage = computeWeeklyAverage(days)
     const offTarget = isRecipeWeekOffTarget(weeklyAverage, input.dailyTarget)
 
@@ -331,11 +386,12 @@ export async function selectRecipes(
       if (summary) warnings.unshift(summary)
     }
 
-    return { selection: { days }, generationMode, modelUsed, attempts, warnings }
+    return { selection: { days }, generationMode, modelUsed, attempts, warnings, repairSwaps: swaps }
   }
 
-  const { grounded, generationMode, modelUsed, attempts } = await runWholeWeekPhase(input, index, maxWeekAttempts, options.onAttempt)
+  const { grounded, generationMode, modelUsed, attempts, swaps } = await runWholeWeekPhase(input, index, repair, maxWeekAttempts, options.onAttempt)
   let days = grounded.days
+  const repairSwaps = [...swaps]
 
   // Per-day retry — LLM path only; the fallback path has no model to retry
   // with, so its days go straight to the final gate below.
@@ -349,8 +405,12 @@ export async function selectRecipes(
       for (const dayIndex of dayIndexesNeedingRetry) {
         const day = days.find((d) => d.dayIndex === dayIndex)!
         const diagnoses = diagnoseDay(day, input, constraints, overused)
-        const retried = await retryOneDay(input, index, day, diagnoses, round + 1, options.onAttempt)
-        if (retried) days = days.map((d) => (d.dayIndex === dayIndex ? retried : d))
+        const otherDays = days.filter((d) => d.dayIndex !== dayIndex)
+        const retried = await retryOneDay(input, index, repair, otherDays, day, diagnoses, round + 1, options.onAttempt)
+        if (retried) {
+          days = days.map((d) => (d.dayIndex === dayIndex ? retried.day : d))
+          repairSwaps.push(...retried.swaps)
+        }
       }
     }
   }
@@ -380,5 +440,5 @@ export async function selectRecipes(
     if (day.cappedRecipeNames.length > 0) warnings.push(`Day ${day.dayIndex}: recipes hit their serving limit: ${day.cappedRecipeNames.join(", ")}`)
   }
 
-  return { selection: { days }, generationMode, modelUsed, attempts, warnings }
+  return { selection: { days }, generationMode, modelUsed, attempts, warnings, repairSwaps }
 }

@@ -1370,7 +1370,116 @@ the filter was real — a rejected week ran fat over on all 7 days with nearly e
 serving bound, and `recipe-balancer.ts` can only scale grams, never fix a dish set's ratio — but that
 is a **selection** problem, which dishes the model picks out of a balanced pool. It has to be fixed
 where it happens (the prompt, or a check on the chosen set). Narrowing the pool to compensate treated
-the symptom and broke what was working. **Over-fat selection remains open.**
+the symptom and broke what was working. Narrowing the pool is still the wrong lever, and always will be —
+but the underlying **selection** problem it was reaching for is now fixed one stage later, in code:
+see "Deterministic macro repair" immediately below.
+
+### Deterministic macro repair (2026-09-21) — `recipe-repair.ts`
+
+The stage between "the model named some dishes" and "the day is judged against the client's target".
+It closes the selection gap the pool-filter experiment above was groping at, and it does so with **zero
+extra API calls**.
+
+**The measurement that produced it**, run over all 12 real saved recipe-engine plans (84 days), not
+reasoned from first principles:
+
+- **63 of those 84 days (75%) had at least one macro target sitting OUTSIDE the range the chosen dish
+  set can physically reach.** `recipe-balancer.ts` only scales grams inside each recipe's authored
+  `[minGrams, maxGrams]`, so once the model has named the dishes, the deviation is already decided.
+- Re-solving those same dish sets with a provably-optimal minimax solver still left **36-47%**
+  worst-macro deviation on the worst three plans (68.1% → 36.1%, 37.7% → 36.8%, 77.2% → 46.7%). The
+  gram optimizer was never the binding constraint. **Dish selection was.**
+- The error is **bias, not variance**: weekly-average protein came back HIGH on **11 of 12** plans
+  (+4.7% to +132%). `RECIPE_BEST_OF_N` samples one skewed distribution N times, so raising it buys
+  nothing — which is why "spend more on best-of-N" is the wrong answer to a deflection complaint.
+  (Note this is the *opposite* sign to the bias recorded in `recipe-prompt.ts`'s own
+  `formatDailyTarget` comment — the heavy protein instruction in `SYSTEM_PROMPT` has since
+  overcorrected. That prompt text is now arguably pushing the wrong way; left alone for now because
+  the repair absorbs it either way, but it is the obvious next thing to re-measure.)
+
+**The move set is deliberately minimal: replace one dish with another dish from the SAME
+`recipeCategoryBucket()`.** A sabzi for a sabzi, a roti for a roti. The plate keeps its shape, its
+dish count and its meal structure by construction — only the dish's identity moves, and its grams are
+then re-solved by the SAME `balanceDayToTargets()` every other path uses. Letting the repair ADD or
+DROP dishes as well was implemented and measured against the same 12 plans: **no better, sometimes
+worse, and slower.** So it is not there.
+
+**Acceptance rules, each one load-bearing:**
+- A move must **strictly reduce the day's worst relative macro deviation** (kcal/protein/carbs/fat —
+  fiber excluded, same soft-target reason `recipe-validate.ts` excludes it; repairing toward a macro
+  nothing rejects for would trade a gated miss for an ungated one).
+- It must **not increase the day's plausibility-problem count**. Not "must be problem-free" — the
+  model's own day routinely already has problems, because best-of-N gates on the weekly average and
+  nothing else, so a zero-problems rule would reject every candidate on exactly the days most in need
+  of repair and the stage would silently no-op. This was a real bug in the prototype, caught only by
+  instrumenting why five of seven days refused to improve.
+- It must **not push a recipe past `MAX_RECIPE_REPEATS_PER_WEEK`**. Swapping one OUT only ever lowers
+  its count, so that single check guarantees repair introduces no new variety violation, while leaving
+  any the model already created alone rather than refusing to repair the day at all. `repairWeek()`
+  threads one mutable weekly tally through the days in order, so seven days cannot collectively
+  overspend the same rescue dish.
+- A day carrying a hand-locked quantity is returned **untouched**. Generation never sets that flag, so
+  this is a guard against a future caller — but a repair that silently re-planned a day around a
+  dietitian's pinned dish would be the worst possible surprise.
+
+**Candidate ranking is an exact one-dimensional solve, not a heuristic gradient.** Holding every other
+dish at the grams the balancer just gave it, `bestAchievableWorst()` asks what the best worst-macro
+deviation this candidate could reach at any legal serving of its own would be — answerable exactly
+over each range end plus the grams that land each macro on target, because worst-deviation is
+piecewise linear in one item's grams. That is an optimistic lower bound on what the full re-balance
+will find, which is what a ranking signal should be, and it lets `MAX_FULL_EVALUATIONS_PER_ROUND`
+budget the expensive step instead of bluntly truncating the search. A first version ranked by linear
+gap-alignment instead and got stuck on most days.
+
+**Measured result, replaying the real production `repairWeek()` over those same 12 plans:**
+
+| | before | after |
+|---|---|---|
+| days within ±8% | 8/84 | **75/84** |
+| weeks passing the write gate | 2/12 | **11/12** |
+| plausibility problems | — | down or flat on every plan, never up |
+| variety violations | — | down or flat on every plan, never up |
+
+Weekly averages land at kcal ±0.2%, protein ±1.7%, carbs ±1.0%, fat ±0.8% on the eleven that pass.
+Cost: 5-34 swaps and **0.7-5.6s of CPU per week**, no model call.
+
+**The one plan it cannot fix is the honest kind of failure.** `debafe7b`'s target asks for **6.4% of
+calories from protein**; the leanest 5% of that client's eligible pool sits at 5%, and the ten leanest
+dishes average 3%. No real Indian day reaches it, so repair gets protein from +130.7% to +63.6% and
+stops. That is an upstream roadmap problem, and the right fix is a **pre-flight reachability check** —
+compare the target's macro shares against the pool's achievable range *before* spending an API call,
+and block on the review page with a real message, the same "never silently fall back to a default
+number in a clinical calculation" rule the Conventions section already states. Not built yet;
+deliberately scoped out so the repair stage could land and be measured on its own.
+
+**Two things this now makes available, both deliberately NOT done in the same change** so a regression
+has one place to come from: `RECIPE_BEST_OF_N` can very likely drop from 5 (repair does the work; N
+only varies the starting point, and every candidate is repaired, so N also multiplies the CPU above),
+and `RECIPE_MACRO_TOLERANCE` can plausibly tighten from 8% back toward the spec's original 5%, which
+75/84 days now clear with room.
+
+**A related fault found and left alone, on purpose.** `recipe-balancer.ts`'s `WEIGHTS` are applied to
+residuals in *raw units* while the gate measures *relative* deviation, so the stated priorities are
+inverted in practice — for a 2030 kcal target, per 1% relative error the effective pull is kcal
+**101.8x** protein, carbs 5.2x, fat 0.2x, despite kcal's stated weight being 0.4 against protein's
+2.0. Since `kcal` is the Atwater sum of the other three, the balancer is effectively optimising "total
+calories exact, composition free" — which is exactly the observed `kcal 0.0% / protein +35% / carbs
+−36%` signature. Normalising the objective by target was prototyped and does help on a fixed dish set
+(12.7% → 9.8% on one real plan), but the repair loop reaches ~1-2% **with the current, unmodified
+balancer**, and the sloppier solver actually produced *better* variety and fewer capped portions by
+forcing the search to find genuinely better dish sets rather than squeezing grams. So the balancer is
+untouched. Fix it only with its own measurement, not as a rider on this.
+
+**THE ONE RULE IS UNTOUCHED.** No model is involved in a repair at any point. Every candidate is a real
+row from `RecipeSelectorInput.allRecipesById` — the identical pool the model was offered, already
+filtered for diet type, cuisine, season, allergens and the zero-kcal rule — every gram still comes out
+of the one balancer, and the acceptance test is arithmetic on verified per-100g data. Repair runs
+inside `attemptWholeWeek()` (so best-of-N and the per-day-retry path cannot drift apart on whether a
+week gets repaired), inside `runWholeWeekPhase()`, and on a single retried day. Swaps travel WITH the
+week they belong to rather than into a shared list, since best-of-N runs N weeks concurrently and
+keeps one. `RecipeSelectionResult.repairSwaps` reports every substitution and `route.ts` logs it —
+a repair is the engine working, not a problem with the plan, so it is not a `warnings` entry, but code
+replacing a dish the model chose must not be invisible either.
 
 ### Fiber — soft target, still logged
 

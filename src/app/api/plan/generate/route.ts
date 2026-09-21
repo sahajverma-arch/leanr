@@ -442,6 +442,15 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
       throw err
     }
   }
+  // Code replacing a dish the model chose (see recipe-repair.ts) is the
+  // engine working as designed, not a problem with the plan — so it is not a
+  // `warnings` entry — but it must not be invisible either.
+  if (selectionResult && selectionResult.repairSwaps.length > 0) {
+    console.info(
+      `[plan/generate] macro repair made ${selectionResult.repairSwaps.length} swap(s): ` +
+        selectionResult.repairSwaps.map((s) => `d${s.dayIndex}/${s.slot} ${s.from} -> ${s.to}`).join(" | ")
+    )
+  }
   lap("llm")
 
   // Same knowledge injection for every attempt log row within this one

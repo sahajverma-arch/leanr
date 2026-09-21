@@ -7,6 +7,7 @@ import type { RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import type { RetrievedDietPlanExample } from "./diet-plan-example-retrieval"
 import type { DietType } from "./exchange-solver"
 import type { RetrievedKnowledgeChunk } from "./knowledge-retrieval"
+import type { RepairSwap } from "./recipe-repair"
 import type { AchievedMacros } from "./table-4-1"
 
 /** AchievedMacros widened with fiber — a soft target, tracked and logged, never a hard reject-gate (see recipe-validate.ts). */
@@ -135,6 +136,14 @@ export interface RecipeSelectionResult {
   modelUsed: string | null
   attempts: number
   warnings: string[]
+  /**
+   * Every dish the deterministic repair stage replaced, and what it
+   * replaced it with (see recipe-repair.ts). NOT a warning — a repair is the
+   * engine working, not a problem with the plan — but code substituting a
+   * dish the model chose must not be invisible, so it is reported rather
+   * than done silently.
+   */
+  repairSwaps: RepairSwap[]
 }
 
 /**
