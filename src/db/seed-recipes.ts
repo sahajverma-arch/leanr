@@ -30,6 +30,7 @@ import { computeServingLimits } from "@/lib/foods/recipe-quantity-normalize"
 import { deriveRecipeUnit } from "@/lib/foods/recipe-unit-label"
 import { resolveAliasCollisions } from "@/lib/foods/recipe-alias-generation"
 import { parseRecipeCsv, type RawRecipeRow } from "@/lib/foods/recipe-csv-parser"
+import { matchRecipeLinks, parseRecipeLinksCsv } from "@/lib/foods/recipe-links"
 import { CurationOverrideTracker } from "@/lib/foods/recipe-curation-overrides"
 import { recipeCategoryBucket } from "@/lib/plan/recipe-category"
 
@@ -58,7 +59,7 @@ function normalizePriority(raw: string): "primary" | "secondary" | null {
   return null
 }
 
-function buildRecipeValues(row: RawRecipeRow, overrides: CurationOverrideTracker) {
+function buildRecipeValues(row: RawRecipeRow, overrides: CurationOverrideTracker, recipeUrl: string | null) {
   const dietClassification = classifyRecipeDietTypes(row.dietPrefRaw)
   const allergenNormalization = normalizeRecipeAllergenTags(row.allergenRaw)
   const cuisine = normalizeCuisine(row.cuisineRaw)
@@ -107,6 +108,7 @@ function buildRecipeValues(row: RawRecipeRow, overrides: CurationOverrideTracker
       carbsPer100G: row.carbsPer100G,
       fatPer100G: row.fatPer100G,
       fiberPer100G: row.fiberPer100G,
+      recipeUrl,
       rawCsvRow: row as unknown as Record<string, unknown>,
     },
     diagnostics: {
@@ -130,6 +132,16 @@ async function main() {
   const parsed = parseRecipeCsv(csvText)
 
   console.log(`Parsed ${parsed.rows.length} real recipe rows (${parsed.garbageRowCount} garbage row(s) dropped).`)
+
+  // Public recipe-page links, matched by name against the dietitian's
+  // hyperlink workbook export. Display metadata only — nothing here can
+  // change a macro, a serving range or which recipes are eligible, so a
+  // name that fails to match costs a link on a PDF, never a number.
+  const parsedLinks = parseRecipeLinksCsv(readFileSync(join(process.cwd(), "src/db/seed-data/recipe_links.csv"), "utf8"))
+  const links = matchRecipeLinks(
+    parsed.rows.map((r) => r.name),
+    parsedLinks.links
+  )
 
   if (parsed.duplicates.length > 0) {
     console.error(`\nRefusing to seed: ${parsed.duplicates.length} unresolved duplicate name group(s) found.`)
@@ -161,7 +173,7 @@ async function main() {
   let inserted = 0
   let updated = 0
   for (const row of parsed.rows) {
-    const { values, diagnostics } = buildRecipeValues(row, overrides)
+    const { values, diagnostics } = buildRecipeValues(row, overrides, links.urlByRecipeName.get(row.name) ?? null)
 
     diagnostics.unclassifiedDietTokens.forEach((t) => unclassifiedDietTokens.add(t))
     diagnostics.unclassifiedAllergenTokens.forEach((t) => unclassifiedAllergenTokens.add(t))
@@ -227,6 +239,23 @@ async function main() {
   )
   console.log(`Commonality distribution: ${[...commonalityDistribution.entries()].sort((a, b) => a[0] - b[0]).map(([k, v]) => `${k}=${v}`).join(", ")}`)
   console.log(`Priority distribution: ${[...priorityDistribution.entries()].map(([k, v]) => `${k}=${v}`).join(", ")}`)
+  console.log(
+    `Recipe links (recipe_links.csv): ${links.urlByRecipeName.size} / ${parsed.rows.length} recipes linked ` +
+      `(${links.matchedExact} exact, ${links.matchedNormalized} name-normalized, ${links.matchedOverride} override).`
+  )
+  parsedLinks.warnings.forEach((w) => console.log(`  link row skipped — ${w}`))
+  if (links.ambiguous.length > 0) {
+    console.log(`  AMBIGUOUS workbook names (dropped, never guessed at) — give one an override in recipe-links.ts:`)
+    links.ambiguous.forEach((a) => console.log(`    ${a.names.map((n) => `"${n}"`).join(" vs ")}`))
+  }
+  if (links.unusedOverrides.length > 0) {
+    console.log(`  STALE link overrides naming a workbook row that no longer exists — fix or remove them in recipe-links.ts:`)
+    links.unusedOverrides.forEach((n) => console.log(`    "${n}"`))
+  }
+  console.log(`  Workbook links matching no recipe: ${links.unmatchedLinks.length}`)
+  if (links.unmatchedLinks.length > 0 && links.unmatchedLinks.length <= 30) {
+    links.unmatchedLinks.forEach((l) => console.log(`    - "${l.name}"`))
+  }
 
   // Aliases: recompute fresh every run — delete every "generated" alias
   // (never touches a "manual" one a dietitian might add later) and reinsert.

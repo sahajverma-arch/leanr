@@ -6,9 +6,12 @@
  * macros must never retroactively change an already-approved historical
  * plan's displayed numbers.
  *
- * quantityLabel is the one exception to snapshotting — a recipe's serving-
- * unit convention ("roti", "cup") is presentation metadata, not nutrition,
- * so it's read live from `recipes` rather than frozen at generation time.
+ * quantityLabel and recipeUrl are the exceptions to snapshotting — a
+ * recipe's serving-unit convention ("roti", "cup") and its public recipe
+ * page are presentation metadata, not nutrition, so they're read live from
+ * `recipes` rather than frozen at generation time. A corrected or moved
+ * recipe link should reach every plan at once, which is the exact opposite
+ * of what the macro snapshot exists to guarantee.
  *
  * exchangeType/dishFamilyId are null/[] — every recipe is already a
  * complete, realistically-named identity with no exchange-vocabulary or
@@ -23,7 +26,7 @@ import type { PlanViewItem } from "./plan-guidelines"
 
 export function recipeItemToPlanViewItem(
   item: DietPlanRecipeItem,
-  recipe: Pick<Recipe, "name" | "category" | "unitLabel" | "perUnitGrams" | "minGrams" | "maxGrams">
+  recipe: Pick<Recipe, "name" | "category" | "unitLabel" | "perUnitGrams" | "minGrams" | "maxGrams" | "recipeUrl">
 ): PlanViewItem {
   const factor = item.grams / 100
   return {
@@ -42,6 +45,7 @@ export function recipeItemToPlanViewItem(
     dishFamilyId: null,
     tags: [],
     quantityLabel: formatRecipeQuantity(recipe, item.grams),
+    recipeUrl: recipe.recipeUrl,
     // What the plan page's edit dialog needs. unitLabel/perUnitGrams/min/max
     // are read LIVE from `recipes`, not snapshotted, for the same reason
     // quantityLabel is: a serving-unit convention and a realistic portion

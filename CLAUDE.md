@@ -1734,6 +1734,66 @@ recomputes. No model is involved anywhere in this path — THE ONE RULE is untou
 never proposes a number at all: every figure is read from verified per-100g data or computed in
 code.
 
+### Recipe links in the downloaded PDF (2026-09-22)
+
+A client reading a downloaded plan can now tap a dish name and land on its recipe page.
+`recipes.recipe_url` (`20260922120000_recipe_url.sql`) carries the link;
+`plan-pdf-document.tsx` renders a linked dish as a react-pdf `<Link>` instead of plain text.
+
+**Source.** A dietitian-maintained "recipe hyperlink" workbook, converted ONCE by
+`scripts/extract-recipe-links.ts` into `src/db/seed-data/recipe_links.csv`, which is what
+`seed-recipes.ts` actually reads — the same discipline `recipe_database.csv` already established:
+an ingestion pipeline must not depend on a file sitting in someone's Downloads folder. The
+workbook itself is not committed; re-run the extractor after it is updated, then re-seed. The
+extractor reads .xlsx directly (it is a zip of XML) rather than adding a spreadsheet dependency
+for a one-off conversion, matching `csv-parser.ts`'s own hand-rolled-parser precedent. Two real
+details in that file it handles rather than guesses at: Excel stores a URL *fragment* separately
+from the page it hangs off (`Target` + `location`), so a link is reassembled from both or it
+silently points somewhere else; and a self-closing `<c/>` cell needs a lazy attribute match, or
+the regex swallows its own `/` and runs on into the next cell's contents — the first version did
+exactly that and shifted every name one row off its link.
+
+**Matching is deliberately shallow, and that is the point** (`recipe-links.ts`): exact → a
+case/punctuation-insensitive normalization → a small hand-audited override table → nothing.
+No fuzzy tier, unlike `recipe-grounding.ts`, and for a reason that does not apply there: a wrong
+Levenshtein resolution in grounding still yields a real, verified recipe row, while a wrong one
+HERE prints a link to a different dish on a clinical document — worse than printing no link. The
+normalization tier is not cosmetic: the recipe CSV is title-cased at source (`Mac Singh'S Chana
+Soup`, `Aloo Tikki`) while the workbook is hand-typed (`Mac Singh's Chana Soup`, `Aloo tikki`),
+and six real recipes differ by nothing else. A normalized key two workbook rows disagree on is
+dropped entirely, never guessed between — the same rule `recipe-alias-generation.ts` already
+applies to an ambiguous alias. The override table currently holds ONE entry (a chamomile tea
+whose workbook name appends a substitution note), the same explicit, reasoned shape as
+`recipe-curation-overrides.ts`.
+
+**Measured coverage: 663 of 1222 recipes linked** (656 exact, 6 normalized, 1 override), with 3
+workbook rows matching nothing — a `test` row, and two dishes whose names differ by more than
+spelling. Those are reported by the seed and asserted in `recipe-links.test.ts` against the two
+committed files, so a future re-export that quietly stops matching fails a test instead of
+shedding links from PDFs unnoticed. **An unlinked dish is the ordinary case, not a gap**: the
+workbook explicitly marks 145 further dishes with `"-"` ("checked, no recipe page exists"), which
+the extractor drops as the real answer it is. An unlinked dish prints exactly as it did before.
+
+**Read live, not snapshotted** — the one place this departs from `diet_plan_recipe_items`'
+discipline, deliberately. The macro snapshot exists so a CSV re-ingestion can never rewrite an
+approved plan's numbers; a corrected or moved *link* is the opposite case and should reach every
+plan at once. `recipe-view-adapter.ts` already made exactly this call for `unitLabel`, and
+`recipeUrl` joins it in that file's own comment. Nothing here touches THE ONE RULE: a URL never
+reaches the balancer, the validator, a target or any macro figure, and no model is involved
+anywhere in this path.
+
+**PDF-only, on purpose.** The plan page is not linked, because clicking a dish there already opens
+the edit dialog (`PlanItemButton` dispatches on `PlanViewItem.editing`) — a competing link would
+be a real regression, not a bonus. A link is only attached to a single-item composed group: pooling
+two foods under one label ("Mixed Vegetable Sabzi") would leave a link naming both and pointing at
+one. Exchange-engine items carry no URL at all, so that path renders byte-for-byte as before —
+verified by rendering a real exchange plan through the production `loadPlanViewModel` +
+`PlanPdfDocument` path and confirming zero link annotations and unchanged food text. The
+recipe-engine side was verified the same way on a real saved plan: 38 of 84 items linked, 54
+`/Subtype /Link` annotations in the output (a link spanning a line break produces one rectangle per
+line), and the explanatory note present. That note is printed only when the plan actually has a
+linked dish — a PDF gives no hover cue that text is clickable.
+
 ### Rollout
 
 `RECIPE_ENGINE_ENABLED` defaults off everywhere. Both engines coexist in `route.ts`, gated by one

@@ -491,6 +491,15 @@ export const recipes = pgTable("recipes", {
   kcalPer100G: numeric("kcal_per_100g", { mode: "number" })
     .notNull()
     .generatedAlwaysAs(sql`round(protein_per_100g * 4 + carbs_per_100g * 4 + fat_per_100g * 9, 1)`),
+  // Public recipe page for this dish, from the dietitian-maintained
+  // hyperlink workbook (src/db/seed-data/recipe_links.csv, see
+  // recipe-links.ts). Null for roughly half the catalogue, which is the
+  // ordinary case, not a gap — the workbook covers what it covers.
+  // Presentation metadata only: never read by any nutrition calculation,
+  // and read LIVE rather than snapshotted onto a plan item, so a corrected
+  // link takes effect everywhere at once (same reasoning as unitLabel — see
+  // recipe-view-adapter.ts).
+  recipeUrl: text("recipe_url"),
   isActive: boolean("is_active").notNull().default(true),
   notes: text("notes"),
   rawCsvRow: jsonb("raw_csv_row").notNull(), // full raw row, audit trail only, never read for macros

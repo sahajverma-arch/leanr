@@ -83,6 +83,8 @@ export interface PlanViewItem {
   fiberG?: number
   /** Recipe-engine only: a whole-number natural quantity ("3 pieces", "1 cup") — see recipe-quantity-display.ts. Null when the recipe has no derivable unit (falls back to a gram figure) or for an exchange-engine item. */
   quantityLabel?: string | null
+  /** Recipe-engine only: the public recipe page for this dish, printed as a clickable link in the plan PDF. Null when the hyperlink workbook has no page for it (roughly half the catalogue) or for an exchange-engine item. Display metadata — never read by any nutrition calculation. */
+  recipeUrl?: string | null
   /** Dish Composition Layer input — see dish-combination.ts / meal-composition.ts. Never read by any nutrition calculation. */
   dishFamilyId: string | null
   /** Straight from foods.tags — meal-composition.ts reads the "salad" tag to keep raw/salad vegetables out of the cooked "Mixed Vegetable Sabzi" pool. Never read by any nutrition calculation. */

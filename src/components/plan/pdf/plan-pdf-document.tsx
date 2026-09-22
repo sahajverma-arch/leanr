@@ -6,7 +6,7 @@
  * JSX with the web page.
  */
 
-import { Document, Page, Path, StyleSheet, Svg, Text, View } from "@react-pdf/renderer"
+import { Document, Link, Page, Path, StyleSheet, Svg, Text, View } from "@react-pdf/renderer"
 
 import { formatBmi, formatGrams, formatKcal, formatWeight } from "@/lib/format"
 import { combineDishGroups } from "@/lib/plan/dish-combination"
@@ -38,6 +38,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center" },
   legendDot: { width: 6, height: 6, borderRadius: 3, marginRight: 4 },
   narrative: { fontSize: 8.5, color: "#4b5563", marginBottom: 10, lineHeight: 1.4 },
+  recipeLinkNote: { fontSize: 8, color: "#4b5563", fontStyle: "italic", marginBottom: 10 },
   dayCard: { borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 6, marginBottom: 8, overflow: "hidden" },
   dayHeader: { backgroundColor: "#0a0a0a", color: "#fff", padding: 6, flexDirection: "row", justifyContent: "space-between", fontSize: 8.5 },
   table: { display: "flex", width: "100%" },
@@ -48,6 +49,7 @@ const styles = StyleSheet.create({
   cellMeal: { width: "10%", padding: 4, fontFamily: "Helvetica-Bold" },
   cellFoods: { width: "38%", padding: 4 },
   cookingFatNote: { fontSize: 7, color: "#6b7280", fontStyle: "italic", marginTop: 2 },
+  recipeLink: { color: "#1d4ed8", textDecoration: "underline" },
   cellNum: { width: "8.8%", padding: 4, textAlign: "right" },
   th: { fontSize: 7, fontFamily: "Helvetica-Bold", color: "#6b7280", textTransform: "uppercase" },
   guidelineItem: { flexDirection: "row", marginBottom: 3 },
@@ -78,6 +80,24 @@ function pdfSafeText(text: string): string {
  */
 function isCookingFatGroup(group: ComposedGroup): boolean {
   return group.kind === "plain" && group.items[0].exchangeType === "fat" && group.items[0].tags.includes("cooking_fat")
+}
+
+/**
+ * The public recipe page behind a composed group, or null when there is
+ * none to link to.
+ *
+ * Only ever set for a recipe-engine item, and only for the roughly half of
+ * the catalogue the dietitian's hyperlink workbook actually covers (see
+ * recipe-links.ts) — an unlinked dish prints as plain text exactly as it
+ * did before. Scoped to a single-item group because that is the only case
+ * where the printed text is unambiguously one dish: pooling two foods under
+ * one label ("Mixed Vegetable Sabzi") would leave a link pointing at one of
+ * them while naming both. Exchange-engine items never carry a URL at all,
+ * so this is null for every one of them.
+ */
+function groupRecipeUrl(group: ComposedGroup): string | null {
+  if (group.items.length !== 1) return null
+  return group.items[0].recipeUrl ?? null
 }
 
 function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
@@ -118,6 +138,9 @@ function MacroDonutPdf({ proteinG, carbsG, fatG }: { proteinG: number; carbsG: n
 
 export function PlanPdfDocument({ model }: { model: PlanViewModel }) {
   const { plan, client, roadmap, targets, deviationPct, days, weeklySummary, weeklyAvg, guidelines, foodsToAvoid, narrative, supplementLine } = model
+  // A PDF gives no hover/cursor cue that a dish name is clickable, so the
+  // note below is printed only when there is actually something to click.
+  const hasRecipeLinks = days.some((day) => day.meals.some((meal) => meal.items.some((item) => item.recipeUrl)))
   const worstDeviation = Math.max(
     Math.abs(deviationPct.kcal),
     Math.abs(deviationPct.proteinG),
@@ -191,6 +214,13 @@ export function PlanPdfDocument({ model }: { model: PlanViewModel }) {
 
         <Text style={styles.narrative}>{pdfSafeText(narrative)}</Text>
 
+        {hasRecipeLinks ? (
+          <Text style={styles.recipeLinkNote}>
+            Dish names shown in blue link to the full recipe — tap or click one to open it. Dishes without a link have
+            no recipe page yet.
+          </Text>
+        ) : null}
+
         {days.map((day) => (
           <View key={day.dayIndex} style={styles.dayCard} wrap={false}>
             <View style={styles.dayHeader}>
@@ -233,7 +263,24 @@ export function PlanPdfDocument({ model }: { model: PlanViewModel }) {
                     <Text style={styles.cellTime}>{meal.timeLabel}</Text>
                     <Text style={styles.cellMeal}>{meal.slotLabel}</Text>
                     <View style={styles.cellFoods}>
-                      <Text>{mainGroups.map(formatComposedGroupPlainText).join(", ")}</Text>
+                      <Text>
+                        {mainGroups.map((group, i) => {
+                          const url = groupRecipeUrl(group)
+                          const text = formatComposedGroupPlainText(group)
+                          return (
+                            <Text key={i}>
+                              {i > 0 ? ", " : ""}
+                              {url ? (
+                                <Link src={url} style={styles.recipeLink}>
+                                  {text}
+                                </Link>
+                              ) : (
+                                text
+                              )}
+                            </Text>
+                          )
+                        })}
+                      </Text>
                       {cookingFatGroups.length > 0 ? (
                         <Text style={styles.cookingFatNote}>
                           Cooking fat: {cookingFatGroups.map(formatComposedGroupPlainText).join(", ")}

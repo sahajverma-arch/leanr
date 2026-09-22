@@ -68,6 +68,7 @@ export function makeRecipe(overrides: Partial<Recipe> = {}): Recipe {
     fatPer100G,
     fiberPer100G: overrides.fiberPer100G ?? 2,
     kcalPer100G: proteinPer100G * 4 + carbsPer100G * 4 + fatPer100G * 9,
+    recipeUrl: overrides.recipeUrl ?? null,
     isActive: overrides.isActive ?? true,
     notes: overrides.notes ?? null,
     rawCsvRow: overrides.rawCsvRow ?? {},
