@@ -49,6 +49,7 @@ const TABLES = [
   "roadmaps",
   "roadmap_overrides",
   "roadmap_supplements",
+  "roadmap_week_targets",
   "exchange_types",
   "foods",
   "meal_templates",

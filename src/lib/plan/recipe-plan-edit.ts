@@ -34,6 +34,7 @@ import {
 import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
+import { applyWeekTargetOverride, type WeekTargetOverride } from "@/lib/counselling/week-target-override"
 import { eligibleCuisinesFor, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import { recipeSeasonMatches } from "@/lib/foods/recipe-season-mapping"
 import type { Season } from "@/lib/foods/vocab"
@@ -91,7 +92,12 @@ async function contextForPlan(plan: typeof dietPlans.$inferSelect): Promise<Reci
   // `region` carries the cuisine string for recipe-engine plans - the same
   // column reuse generation made (see CLAUDE.md "The recipe engine").
   const cuisine = plan.region as RecipeCuisine
-  const wt = weekTargets(roadmapRow.output as RoadmapResult, plan.weekNumber)
+  // The plan's OWN snapshot of any review-page week target override, for the
+  // same reason the supplement is read from the snapshot below.
+  const wt = applyWeekTargetOverride(
+    weekTargets(roadmapRow.output as RoadmapResult, plan.weekNumber),
+    (plan.targetOverride as WeekTargetOverride | null) ?? null
+  )
   const { food } = foodTargetsAfterSupplement(wt, (plan.supplement as PrescribedSupplement | null) ?? null)
   const allergenTags = clientRecipeAllergenTagsFromAnswers(answers)
 

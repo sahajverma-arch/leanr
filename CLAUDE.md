@@ -2234,6 +2234,26 @@ answers, never snapshotted, so a correction takes effect immediately.
 **THE ONE RULE is untouched.** These are dietitian-entered figures off a product label. The LLM never
 sees them, never proposes them, and simply composes recipes against a smaller protein number.
 
+## Dietitian-edited week targets (2026-09-23)
+
+The review page's next-4-weeks table has a pencil on each week row. It opens a side panel where the
+dietitian sets that week's **kcal, protein and carbs** to what the client prefers. Stored in
+`roadmap_week_targets` (one row per roadmap + week), never mutating the roadmap, the same shape as
+`roadmap_supplements`.
+
+**Fat is not entered. It is the residual**, `(kcal − 4·protein − 4·carbs) / 9`
+(`week-target-override.ts`). That keeps the target internally consistent, which the balancer needs,
+and it mirrors how `weekTargets()` itself derives carbs. Numbers that leave negative fat are refused
+(`WeekTargetValidationError`). Very low fat only warns. Fibre stays the computed figure.
+
+**Order: override first, then supplement.** The override replaces the *prescribed* target, and
+`foodTargetsAfterSupplement()` still subtracts the scoop from it. Both are applied in `route.ts`, on
+the review page, and in `recipe-plan-edit.ts`. **Snapshot discipline:** `diet_plans.target_override`
+stores the override in force at generation, and plan edits read that snapshot, not the live row.
+Otherwise changing a week's numbers later would re-aim an existing plan's re-balances. Saving does
+not regenerate a plan. THE ONE RULE is untouched: these are dietitian-typed numbers, and no model
+ever proposes them.
+
 ## Rounding & precision
 - All intermediate maths unrounded. Round only at display.
 - kcal, protein/carb/fat grams → integer at display.

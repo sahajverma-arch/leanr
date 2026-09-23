@@ -33,12 +33,14 @@ import {
   roadmapOverrides,
   roadmaps,
   roadmapSupplements,
+  roadmapWeekTargets,
   vegetableDishCombinationMembers,
   vegetableDishCombinations,
 } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
+import { applyWeekTargetOverride, WeekTargetValidationError, type WeekTargetOverride } from "@/lib/counselling/week-target-override"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { env } from "@/lib/env"
 import { REGIONS, SEASONS } from "@/lib/foods/vocab"
@@ -304,6 +306,8 @@ interface RecipeEngineContext {
   dailyTarget: DailyRecipeTarget
   /** Snapshotted onto the plan so a later edit to the prescription cannot rewrite history. */
   supplement: PrescribedSupplement | null
+  /** The review page's week target override in force, snapshotted for the same reason. */
+  targetOverride: WeekTargetOverride | null
   dietType: ReturnType<typeof dietTypeFromAnswers>
   clientRecipeAllergenTags: string[]
   /** Dietitian Knowledge RAG layer (gated by DIETITIAN_KNOWLEDGE_ENABLED) — empty when off or nothing retrieved. See CLAUDE.md "Dietitian knowledge layer". */
@@ -556,6 +560,7 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
         // off when they open the plan — not only in the response to the
         // click that generated it.
         supplement: ctx.supplement,
+        targetOverride: ctx.targetOverride,
         warnings: selectionResult.warnings,
         preparedBy: ctx.user.id,
         status: "draft",
@@ -745,7 +750,26 @@ export async function POST(request: Request) {
   // — both engines, the balancer, the tolerance gate, the stored deviations —
   // uses the FOOD figure, because that is what the recipes are being asked to
   // provide. See supplement-adjusted-targets.ts.
-  const prescribedTarget = weekTargets(roadmapOutput, weekNumber)
+  // A dietitian's hand-set target for this week (review page) replaces the
+  // computed one BEFORE the supplement is subtracted — see
+  // week-target-override.ts. Snapshotted onto the plan like the supplement.
+  const [weekTargetRow] = await db
+    .select()
+    .from(roadmapWeekTargets)
+    .where(and(eq(roadmapWeekTargets.roadmapId, roadmapId), eq(roadmapWeekTargets.weekNumber, weekNumber)))
+    .limit(1)
+  const targetOverride: WeekTargetOverride | null = weekTargetRow
+    ? { kcal: weekTargetRow.kcal, proteinG: weekTargetRow.proteinG, carbsG: weekTargetRow.carbsG }
+    : null
+  let prescribedTarget
+  try {
+    prescribedTarget = applyWeekTargetOverride(weekTargets(roadmapOutput, weekNumber), targetOverride)
+  } catch (err) {
+    if (err instanceof WeekTargetValidationError) {
+      return NextResponse.json({ error: `Week ${weekNumber} targets: ${err.message}` }, { status: 422 })
+    }
+    throw err
+  }
   const [supplementRow] = await db
     .select()
     .from(roadmapSupplements)
@@ -905,6 +929,7 @@ export async function POST(request: Request) {
       cuisine,
       mealCount,
       supplement: prescribedSupplement,
+      targetOverride,
       clientId: client.id,
       slots,
       weekStartDate,

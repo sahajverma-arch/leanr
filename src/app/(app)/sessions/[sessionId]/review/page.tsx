@@ -3,7 +3,7 @@ import { notFound } from "next/navigation"
 import Link from "next/link"
 
 import { db } from "@/db"
-import { clients, counsellingSessions, mealTemplates, roadmapOverrides, roadmapSupplements, roadmaps } from "@/db/schema"
+import { clients, counsellingSessions, mealTemplates, roadmapOverrides, roadmapSupplements, roadmapWeekTargets, roadmaps } from "@/db/schema"
 import { proteinPowderRestriction, regionFromAnswers } from "@/lib/plan/client-profile-from-answers"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
@@ -14,10 +14,12 @@ import { FlagsPanel } from "@/components/review/flags-panel"
 import { ActionsBar } from "@/components/review/actions-bar"
 import { OverrideDialog } from "@/components/review/override-dialog"
 import { SupplementCard } from "@/components/review/supplement-card"
+import { WeekTargetEditor } from "@/components/review/week-target-editor"
 import type { Answers } from "@/lib/counselling/questions"
 import type { RoadmapInput, RoadmapResult } from "@/lib/counselling/roadmap"
 import { weekTargets } from "@/lib/counselling/roadmap"
 import { describeSupplement, foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
+import { applyWeekTargetOverride, type WeekTargetOverride } from "@/lib/counselling/week-target-override"
 import { formatBmi, formatDivisor, formatGrams, formatKcal, formatWeight } from "@/lib/format"
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -113,9 +115,21 @@ export default async function ReviewPage({
   // and `food` is what the recipes will actually be solved against once the
   // supplement is subtracted. Showing only one of them would hide either the
   // prescription or what the plan is really being built to.
+  // A dietitian's hand-set week target replaces the computed one before the
+  // supplement is subtracted — exactly the order generation applies them in.
+  const weekTargetRows = await db
+    .select()
+    .from(roadmapWeekTargets)
+    .where(eq(roadmapWeekTargets.roadmapId, roadmapRow.id))
+  const overrideByWeek = new Map<number, WeekTargetOverride>(
+    weekTargetRows.map((r) => [r.weekNumber, { kcal: r.kcal, proteinG: r.proteinG, carbsG: r.carbsG }])
+  )
   const upcomingWeeks = Array.from({ length: WEEKS_AHEAD }, (_, i) => {
-    const prescribed = weekTargets(output, i + 1)
-    return { week: i + 1, prescribed, ...foodTargetsAfterSupplement(prescribed, supplement) }
+    const week = i + 1
+    const computed = weekTargets(output, week)
+    const override = overrideByWeek.get(week) ?? null
+    const prescribed = applyWeekTargetOverride(computed, override)
+    return { week, computed, override, prescribed, ...foodTargetsAfterSupplement(prescribed, supplement) }
   })
   const supplementWarnings = upcomingWeeks[0]?.warnings ?? []
 
@@ -317,12 +331,17 @@ export default async function ReviewPage({
           Next {WEEKS_AHEAD} weeks vs. {output.projection.label.toLowerCase()}
           {supplement ? " — kcal and protein show what the FOOD must supply, of the full prescribed target" : ""}
         </h2>
+        <p className="mb-3 text-sm text-muted-foreground">
+          You can change the protein, carbs and calories according to what the client prefers — the dietitian can
+          change them for any week with the pencil <span aria-hidden>✎</span> next to it.
+        </p>
         <Card>
           <CardContent className="pt-6">
-            <table className="w-full text-sm">
+            {/* Fixed layout so the "edited" badge cannot shift the columns. */}
+            <table className="w-full table-fixed text-sm">
               <thead>
                 <tr className="border-b text-left text-muted-foreground">
-                  <th className="py-1.5 font-normal">&nbsp;</th>
+                  <th className="w-[36%] py-1.5 font-normal">&nbsp;</th>
                   <th className="py-1.5 font-normal">kcal</th>
                   <th className="py-1.5 font-normal">Protein</th>
                   <th className="py-1.5 font-normal">Fat</th>
@@ -330,9 +349,25 @@ export default async function ReviewPage({
                 </tr>
               </thead>
               <tbody className="tabular-nums">
-                {upcomingWeeks.map(({ week, prescribed, food }) => (
+                {upcomingWeeks.map(({ week, computed, override, prescribed, food }) => (
                   <tr key={week} className="border-b">
-                    <td className="py-1.5 font-medium">Week {week}</td>
+                    <td className="py-1.5 font-medium">
+                      <span className="inline-flex items-center gap-1">
+                        Week {week}
+                        <WeekTargetEditor
+                          roadmapId={roadmapRow.id}
+                          sessionId={sessionId}
+                          weekNumber={week}
+                          computed={computed}
+                          current={override}
+                        />
+                        {override && (
+                          <Badge variant="secondary" className="font-normal">
+                            edited
+                          </Badge>
+                        )}
+                      </span>
+                    </td>
                     <td>
                       {formatKcal(food.kcal)}
                       {supplement && (

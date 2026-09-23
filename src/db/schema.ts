@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, numeric, integer, boolean, vector } from "drizzle-orm/pg-core"
+import { pgTable, uuid, text, timestamp, jsonb, numeric, integer, boolean, vector, unique } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const profiles = pgTable("profiles", {
@@ -111,6 +111,35 @@ export const roadmapSupplements = pgTable("roadmap_supplements", {
 
 export type RoadmapSupplement = typeof roadmapSupplements.$inferSelect
 export type NewRoadmapSupplement = typeof roadmapSupplements.$inferInsert
+
+/**
+ * A dietitian's hand-set daily target for one week (kcal, protein, carbs),
+ * entered on the review page before generation to match what the client
+ * prefers. Replaces weekTargets()'s computed figure for that week; fat is
+ * derived as the residual — see week-target-override.ts.
+ *
+ * Attached to the roadmap and never mutating it, like roadmapSupplements.
+ * ONE row per (roadmap, week), enforced by a unique index.
+ */
+export const roadmapWeekTargets = pgTable(
+  "roadmap_week_targets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    roadmapId: uuid("roadmap_id")
+      .notNull()
+      .references(() => roadmaps.id, { onDelete: "cascade" }),
+    weekNumber: integer("week_number").notNull(),
+    kcal: numeric("kcal", { mode: "number" }).notNull(),
+    proteinG: numeric("protein_g", { mode: "number" }).notNull(),
+    carbsG: numeric("carbs_g", { mode: "number" }).notNull(),
+    createdBy: uuid("created_by").references(() => profiles.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("roadmap_week_targets_roadmap_week_unique").on(t.roadmapId, t.weekNumber)]
+)
+
+export type RoadmapWeekTarget = typeof roadmapWeekTargets.$inferSelect
 
 /** Table 4.1 — Comprehensive Food Exchange List (11 rows). READ-ONLY at runtime. See CLAUDE.md "The exchange system". */
 export const exchangeTypes = pgTable("exchange_types", {
@@ -342,6 +371,11 @@ export const dietPlans = pgTable("diet_plans", {
   // told the client to take, the same reasoning diet_plan_recipe_items'
   // macro snapshots already follow. Null = none prescribed.
   supplement: jsonb("supplement"),
+  // The dietitian's hand-set week target in force when this plan was
+  // generated ({kcal, proteinG, carbsG}), snapshotted for the same reason as
+  // `supplement`: a later edit on the review page must not re-aim an
+  // existing plan's edits. Null = the roadmap's computed target was used.
+  targetOverride: jsonb("target_override"),
   // Every reason this plan is not a clean pass, as a string[]: per-day macro
   // misses, plausibility problems, variety breaches, serving-limit hits.
   // Nullable so every historical row backfills as "nothing recorded" rather

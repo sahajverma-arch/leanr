@@ -1,17 +1,18 @@
 "use server"
 
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { z } from "zod"
 import { revalidatePath } from "next/cache"
 
 import { db } from "@/db"
-import { counsellingSessions, roadmapOverrides, roadmaps, roadmapSupplements } from "@/db/schema"
+import { counsellingSessions, roadmapOverrides, roadmaps, roadmapSupplements, roadmapWeekTargets } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { ENGINE_VERSION, roadmapFor } from "@/lib/counselling/roadmap"
 import { roadmapInputFromAnswers } from "@/lib/counselling/roadmap-input"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { proteinPowderRestriction } from "@/lib/plan/client-profile-from-answers"
 import { SupplementValidationError } from "@/lib/counselling/supplement-adjusted-targets"
+import { assertWeekTargetOverride } from "@/lib/counselling/week-target-override"
 
 /** Snapshots are immutable — this always inserts a new row, never updates the existing one. */
 export async function recomputeRoadmap(sessionId: string) {
@@ -141,5 +142,64 @@ export async function savePrescribedSupplement(input: SupplementInput) {
 export async function removePrescribedSupplement(roadmapId: string, sessionId: string) {
   await requireStaffUser()
   await db.delete(roadmapSupplements).where(eq(roadmapSupplements.roadmapId, z.string().uuid().parse(roadmapId)))
+  revalidatePath(`/sessions/${z.string().uuid().parse(sessionId)}/review`)
+}
+
+/**
+ * A dietitian's hand-set daily target for one week — kcal, protein and carbs
+ * the client prefers. Fat is derived as the residual, never entered; see
+ * week-target-override.ts. Stored against the roadmap, never mutating it.
+ *
+ * Like the supplement, saving does NOT regenerate an existing plan — a
+ * generated plan keeps its own snapshot of the override it was built with.
+ */
+const weekTargetInputSchema = z.object({
+  roadmapId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  weekNumber: z.number().int().min(1).max(104),
+  // Wide but finite: catches a slipped digit (18000 for 1800) without
+  // second-guessing a real prescription.
+  kcal: z.number().min(800, "Below 800 kcal is not a plannable day.").max(5000, "That is more than any real daily target — check the number."),
+  proteinG: z.number().min(10, "Protein must be at least 10 g.").max(400, "That is more protein than any real daily target — check the number."),
+  carbsG: z.number().min(0).max(800, "That is more carbs than any real daily target — check the number."),
+})
+
+export type WeekTargetInput = z.input<typeof weekTargetInputSchema>
+
+export async function saveWeekTargetOverride(input: WeekTargetInput) {
+  const user = await requireStaffUser()
+  const parsed = weekTargetInputSchema.parse(input)
+  // Throws WeekTargetValidationError if protein + carbs leave no room for fat.
+  assertWeekTargetOverride(parsed)
+
+  await db
+    .insert(roadmapWeekTargets)
+    .values({
+      roadmapId: parsed.roadmapId,
+      weekNumber: parsed.weekNumber,
+      kcal: parsed.kcal,
+      proteinG: parsed.proteinG,
+      carbsG: parsed.carbsG,
+      createdBy: user.id,
+    })
+    .onConflictDoUpdate({
+      target: [roadmapWeekTargets.roadmapId, roadmapWeekTargets.weekNumber],
+      set: { kcal: parsed.kcal, proteinG: parsed.proteinG, carbsG: parsed.carbsG, updatedAt: new Date() },
+    })
+
+  revalidatePath(`/sessions/${parsed.sessionId}/review`)
+}
+
+/** Back to the roadmap's computed target for that week. */
+export async function clearWeekTargetOverride(roadmapId: string, sessionId: string, weekNumber: number) {
+  await requireStaffUser()
+  await db
+    .delete(roadmapWeekTargets)
+    .where(
+      and(
+        eq(roadmapWeekTargets.roadmapId, z.string().uuid().parse(roadmapId)),
+        eq(roadmapWeekTargets.weekNumber, z.number().int().min(1).parse(weekNumber))
+      )
+    )
   revalidatePath(`/sessions/${z.string().uuid().parse(sessionId)}/review`)
 }
