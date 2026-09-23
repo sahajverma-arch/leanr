@@ -19,6 +19,7 @@
  *
  * Never imported by production code.
  */
+import { isRecipeAllowedForDiet, isAnimalProteinRecipe } from "@/lib/foods/recipe-animal-content"
 import { and, eq, inArray } from "drizzle-orm"
 import * as fs from "fs"
 
@@ -81,7 +82,7 @@ async function build() {
 
   const eligibleCuisines = eligibleCuisinesFor(cuisine)
   const rows = await db.select().from(recipes).where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisines)))
-  const filtered = rows.filter((r) => r.dietTypes.includes(dietType) && recipeSeasonMatches(r.season, season))
+  const filtered = rows.filter((r) => isRecipeAllowedForDiet(r, dietType) && recipeSeasonMatches(r.season, season))
 
   const forPrompt: RecipeForPrompt[] = filtered.map((r) => ({
     id: r.id, name: r.name, category: r.category, consistency: r.consistency,
@@ -189,7 +190,7 @@ async function main() {
           items: m.items.map((i) => ({
             name: i.recipe.name, grams: i.grams, category: i.recipe.category,
             unitLabel: i.recipe.unitLabel, perUnitGrams: i.recipe.perUnitGrams,
-            isNonVeg: !i.recipe.dietTypes.includes("vegetarian"),
+            isNonVeg: isAnimalProteinRecipe(i.recipe),
             kcal: (i.recipe.kcalPer100G * i.grams) / 100, proteinG: (i.recipe.proteinPer100G * i.grams) / 100,
             carbsG: (i.recipe.carbsPer100G * i.grams) / 100, fatG: (i.recipe.fatPer100G * i.grams) / 100,
             fiberG: (i.recipe.fiberPer100G * i.grams) / 100,

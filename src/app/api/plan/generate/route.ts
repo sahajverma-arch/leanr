@@ -40,6 +40,8 @@ import {
 import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
+import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
+import { recipeDietViolations } from "@/lib/plan/recipe-diet-gate"
 import { applyWeekTargetOverride, WeekTargetValidationError, type WeekTargetOverride } from "@/lib/counselling/week-target-override"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { env } from "@/lib/env"
@@ -362,7 +364,9 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
 
   const eligible = cuisineRows.filter(
     (r) =>
-      r.dietTypes.includes(ctx.dietType) &&
+      // NOT r.dietTypes.includes(): the stored label was wrong for real fish
+      // dishes. The dish's own name/allergens must agree too.
+      isRecipeAllowedForDiet(r, ctx.dietType) &&
       recipeSeasonMatches(r.season, ctx.season) &&
       !r.allergenTags.some((t) => ctx.clientRecipeAllergenTags.includes(t))
   )
@@ -507,6 +511,22 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
   }
 
   const days = selectionResult.selection.days
+
+  // HARD diet gate, independent of every earlier filter: nothing that is not
+  // allowed for this client's diet type is ever written, whichever path
+  // (model, repair, fallback) put it on the plate. See recipe-diet-gate.ts.
+  const dietViolations = recipeDietViolations(days, ctx.dietType)
+  if (dietViolations.length > 0) {
+    console.error(`[plan/generate recipe] DIET GATE REJECTED ${ctx.dietType} week: ${dietViolations.join(" | ")}`)
+    return NextResponse.json(
+      {
+        error: `This week was rejected: it contained dishes that are not ${ctx.dietType}. Nothing was saved. Please generate again.`,
+        dayProblems: dietViolations,
+      },
+      { status: 422 }
+    )
+  }
+
   const weeklyAverageAchieved = {
     kcal: days.reduce((sum, d) => sum + d.totals.kcal, 0) / days.length,
     proteinG: days.reduce((sum, d) => sum + d.totals.proteinG, 0) / days.length,

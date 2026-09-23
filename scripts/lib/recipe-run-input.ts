@@ -9,6 +9,7 @@
  *
  * Never imported by production code.
  */
+import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { and, eq, inArray } from "drizzle-orm"
 
 import { db } from "../../src/db"
@@ -82,7 +83,7 @@ export async function buildRecipeRunContext(
   const clientAllergenTags = clientRecipeAllergenTagsFromAnswers(session.answers as Answers)
   const eligible = cuisineRows.filter(
     (r) =>
-      r.dietTypes.includes(dietType) &&
+      isRecipeAllowedForDiet(r, dietType) &&
       recipeSeasonMatches(r.season, season) &&
       !r.allergenTags.some((t) => clientAllergenTags.includes(t))
   )

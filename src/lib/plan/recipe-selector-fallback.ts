@@ -12,6 +12,7 @@
  * mixed-veg-day.ts already use elsewhere in this codebase.
  */
 
+import { evidenceSafeDietTypes } from "@/lib/foods/recipe-animal-content"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
 import { isSelfContainedMeal, STAPLE_BUCKETS } from "./recipe-meal-structure"
 import { findPairingCompanion, isMustHaveSatisfied } from "./recipe-pairing"
@@ -115,7 +116,7 @@ export function recipeSelectorFallback(input: RecipeSelectorInput): RecipeSelect
 
   const nonVegPool = input.eligibleRecipesForPrompt.filter((r) => {
     const full = input.allRecipesById.get(r.id)
-    return full ? isRealNonVegRecipe(full.dietTypes) : false
+    return full ? isRealNonVegRecipe(evidenceSafeDietTypes(full.dietTypes, full)) : false
   })
 
   const days: SelectedRecipeDay[] = []

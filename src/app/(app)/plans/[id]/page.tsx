@@ -27,6 +27,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
     targets,
     deviationPct,
     warnings,
+    dietViolations,
     supplementLine,
     days,
     weeklySummary,
@@ -54,6 +55,23 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
           nearest week rather than rejecting it, so the dietitian is the one
           who decides whether it is usable — which only works if they can see
           what is off. Rendered before anything else, and kept in print. */}
+      {/* A dish the client's diet forbids. Only an older plan (generated
+          before the diet evidence check) can show this — generation now
+          rejects such a week outright, and approval is refused while any
+          remains. Red, above everything, and kept in print. */}
+      {dietViolations.length > 0 && (
+        <div className="rounded-xl border-2 border-red-600 bg-red-50 p-4 text-red-950">
+          <h2 className="text-sm font-semibold uppercase tracking-wide">
+            Not {plan.dietType.replace("_", "-")} — do not send this plan
+          </h2>
+          <p className="mt-2 text-sm">
+            This plan contains {dietViolations.length === 1 ? "a dish" : "dishes"} the client must not eat:{" "}
+            <strong>{dietViolations.join(", ")}</strong>. Regenerate the plan, or swap each one out. It cannot be
+            approved until they are gone.
+          </p>
+        </div>
+      )}
+
       {warnings.length > 0 && (
         <div className="rounded-xl border-2 border-amber-500 bg-amber-50 p-4 text-amber-950">
           <h2 className="text-sm font-semibold uppercase tracking-wide">Needs your review before approving</h2>

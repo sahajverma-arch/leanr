@@ -53,6 +53,7 @@ import {
 } from "./plan-guidelines"
 import { buildRecipeGuidelines } from "./recipe-guidelines"
 import { recipeItemToPlanViewItem } from "./recipe-view-adapter"
+import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { TABLE_4_1, ZERO_COUNTS, type ExchangeCode, type ExchangeCounts } from "./table-4-1"
 import { describeSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 
@@ -94,6 +95,13 @@ export interface PlanViewModel {
   deviationPct: { kcal: number; proteinG: number; fatG: number; carbsG: number }
   /** Generation warnings recorded on the plan row. Empty when the plan was a clean pass, or predates the column. */
   warnings: string[]
+  /**
+   * Dishes on this plan the client's diet type forbids, by the dish's own
+   * evidence (recipe-animal-content.ts), read against the LIVE recipe row.
+   * Always empty for a plan generated since that check existed; non-empty
+   * only for an older plan, which then cannot be approved.
+   */
+  dietViolations: string[]
   /** One line describing the prescribed supplement, or null. Snapshotted on the plan, never a live lookup. */
   supplementLine: string | null
   days: PlanViewDay[]
@@ -160,6 +168,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
   // every downstream consumer (meal grouping, quantity formatting,
   // guidelines) is unaware of which engine produced a given plan.
   const itemsByMealId = new Map<string, PlanViewItem[]>()
+  const dietViolations = new Set<string>()
   if (plan.engine === "recipe") {
     const recipeItemRows = mealRows.length
       ? await db
@@ -174,6 +183,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
           )
       : []
     for (const { item, recipe } of recipeItemRows) {
+      if (!isRecipeAllowedForDiet(recipe, plan.dietType)) dietViolations.add(recipe.name)
       const list = itemsByMealId.get(item.dietPlanMealId) ?? []
       list.push(recipeItemToPlanViewItem(item, recipe))
       itemsByMealId.set(item.dietPlanMealId, list)
@@ -449,6 +459,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
     targets,
     deviationPct,
     warnings: (plan.warnings as string[] | null) ?? [],
+    dietViolations: [...dietViolations],
     supplementLine: plan.supplement ? describeSupplement(plan.supplement as PrescribedSupplement) : null,
     days,
     weeklySummary,

@@ -1332,6 +1332,46 @@ bounds: a throttled call drops one candidate instead of failing the request. `at
 cannot drift apart on how a week is built, and the deterministic fallback selector is still used, but
 only if *every* one of the N calls failed.
 
+### Diet type is decided by the dish's evidence, not its label (2026-09-23)
+
+**A vegetarian client was served fish on 6 of 7 days.** Dhruti (vegetarian, Gujarati) got Goan Fish
+Curry, Fish Tikka and Low-Cal Fish Curry. Her profile and the plan were correctly `vegetarian`; the
+dishes were not. The source CSV's hand-typed `Diet Pref` column labelled **20 real non-veg dishes
+VEGETARIAN** (most of them VEGAN too) — fish, prawn, mutton, a shami kabab sub, plus one listing egg
+whites — while the *same row's* Allergen column said "Fish, Seafood". Two more egg dishes that contain
+chicken were labelled eggetarian. Every eligibility check trusted `recipes.diet_types` alone, and the
+plausibility validator's diet re-check could not help: it read the same label, and on the best-of-N
+path its problems are only warnings anyway.
+
+**The rule now** (`recipe-animal-content.ts`): a dish's own evidence can veto a diet label. Any one
+of three independent signals is enough — allergen tags (fish/seafood/egg), whole-word name matches
+(fish, macher, ilish, chingri, prawn, mutton, chicken, shami, keema without a veg qualifier, egg,
+omelette...), and the ingredient list from `recipe_ingredients.csv`. Meat/fish → non_vegetarian only;
+egg → eggetarian + non_vegetarian; a `lactose` tag drops vegan; an `onion_garlic` tag drops jain.
+Evidence only ever REMOVES a label, never adds one — a false positive costs one dish out of ~1000, a
+false negative puts meat on a vegetarian's plate. Word matches are whole-word on purpose ("Veggies",
+"Eggplant", "Eggless", "Chickpea", "Nutri Keema", "Egg Keema", "Goat cheese" all stay correct, and
+are tested).
+
+**Enforced at five independent layers, so no single mistake reaches a client:**
+1. **Ingestion** — `seed-recipes.ts` writes evidence-checked `diet_types` and prints every veto.
+2. **Pool** — `route.ts` and `eligibleRecipesForPlan()` (swap/add picker) filter with
+   `isRecipeAllowedForDiet()`, never `dietTypes.includes()`. So does `assertRecipeAllowed()` on the
+   edit write, and the plausibility validator.
+3. **Final write gate** — `recipe-diet-gate.ts`, run in `route.ts` just before the plan is saved. A
+   HARD 422, never a warning, whatever path (model, repair, fallback) put the dish there.
+4. **Approval** — `approvePlan()` refuses a recipe plan with any forbidden dish, read against the
+   live recipe row, which catches plans generated before this fix.
+5. **Plan page** — a red "not vegetarian — do not send this plan" banner above everything.
+
+**Do not replace any `isRecipeAllowedForDiet()` call with `recipe.dietTypes.includes()`**, and do
+not trust a re-seeded label on its own. After any recipe CSV update, run
+`npx tsx --env-file=.env.local scripts/audit-recipe-diet-types.ts` (add `--fix` to correct the DB);
+`recipe-animal-content.test.ts` also runs the check over the committed CSVs and fails if a
+mislabelled non-veg dish comes back. Pool sizes after the fix: vegetarian 1074, eggetarian 1144,
+vegan 606, jain 446. Verified end to end: Dhruti's two old plans show the red banner and refuse
+approval; a fresh vegetarian Gujarati generation came back with 72 dishes and zero animal evidence.
+
 ### Recipe pool filter — nutritionally-empty rows
 
 `recipe-pool-filters.ts`, applied in `route.ts` (and the dev tools' shared input builder) *before the

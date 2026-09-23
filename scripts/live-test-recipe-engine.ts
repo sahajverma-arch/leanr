@@ -7,6 +7,7 @@
  *   npx tsx --env-file=.env.local scripts/live-test-recipe-engine.ts <roadmapId> ["North Indian"]
  * Never imported by production code.
  */
+import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { eq, and, inArray } from "drizzle-orm"
 
 import { db } from "../src/db"
@@ -94,7 +95,7 @@ async function main() {
   // worse than no instrument.
   const filtered = filterRecipePool(cuisineRows.filter(
       (r) =>
-        r.dietTypes.includes(dietType) &&
+        isRecipeAllowedForDiet(r, dietType) &&
         recipeSeasonMatches(r.season, season) &&
         !r.allergenTags.some((t) => clientRecipeAllergenTags.includes(t))
     ))

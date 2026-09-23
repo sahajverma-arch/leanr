@@ -23,6 +23,7 @@
  *
  * Never imported by production code.
  */
+import { isAnimalProteinRecipe } from "@/lib/foods/recipe-animal-content"
 import * as fs from "fs"
 
 import { buildRecipeRunContext } from "./lib/recipe-run-input"
@@ -206,7 +207,7 @@ async function main() {
                 category: i.recipe.category,
                 unitLabel: i.recipe.unitLabel,
                 perUnitGrams: i.recipe.perUnitGrams,
-                isNonVeg: !i.recipe.dietTypes.includes("vegetarian"),
+                isNonVeg: isAnimalProteinRecipe(i.recipe),
                 kcal: (i.recipe.kcalPer100G * i.grams) / 100,
                 proteinG: (i.recipe.proteinPer100G * i.grams) / 100,
                 carbsG: (i.recipe.carbsPer100G * i.grams) / 100,

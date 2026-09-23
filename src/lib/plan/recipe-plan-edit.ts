@@ -34,6 +34,7 @@ import {
 import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
+import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { applyWeekTargetOverride, type WeekTargetOverride } from "@/lib/counselling/week-target-override"
 import { eligibleCuisinesFor, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import { recipeSeasonMatches } from "@/lib/foods/recipe-season-mapping"
@@ -166,7 +167,7 @@ export async function eligibleRecipesForPlan(ctx: RecipePlanContext): Promise<Re
 
   return rows.filter(
     (r) =>
-      r.dietTypes.includes(ctx.dietType) &&
+      isRecipeAllowedForDiet(r, ctx.dietType) &&
       recipeSeasonMatches(r.season, ctx.season) &&
       !r.allergenTags.some((t) => ctx.allergenTags.includes(t)) &&
       r.kcalPer100G > 0
@@ -175,7 +176,7 @@ export async function eligibleRecipesForPlan(ctx: RecipePlanContext): Promise<Re
 
 /** The same checks eligibleRecipesForPlan applies, as a hard gate on one chosen recipe. Message names the real reason. */
 export function assertRecipeAllowed(recipe: RecipeForPipeline, ctx: RecipePlanContext): void {
-  if (!recipe.dietTypes.includes(ctx.dietType)) {
+  if (!isRecipeAllowedForDiet(recipe, ctx.dietType)) {
     throw new PlanEditError(`${recipe.name} is not suitable for a ${ctx.dietType} client.`)
   }
   const blocked = recipe.allergenTags.filter((t) => ctx.allergenTags.includes(t))

@@ -8,6 +8,7 @@ import { db } from "@/db"
 import { counsellingSessions, dietPlanDays, dietPlanItems, dietPlanMeals, dietPlanRecipeItems, dietPlans, foods, recipes, roadmaps } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
+import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { clientAllergensFromAnswers, clientDislikesFromAnswers } from "@/lib/plan/client-profile-from-answers"
 import { filterEligibleFoods, type EligibilityCriteria } from "@/lib/plan/eligible-foods"
 import {
@@ -177,6 +178,27 @@ export async function approvePlan(planId: string): Promise<void> {
     throw new Error(
       `Plan deviation exceeds ${ACCEPTANCE_FRACTION * 100}% on at least one macro — cannot approve. Regenerate the plan instead.`
     )
+  }
+
+  // Never approve a plan carrying a dish the client's diet forbids — this
+  // also catches plans generated BEFORE the diet evidence check existed
+  // (recipe-animal-content.ts), which a regeneration would have rejected.
+  // Read against the LIVE recipe row, since the stored label may have been
+  // corrected since generation.
+  if (plan.engine === "recipe") {
+    const items = await db
+      .select({ name: recipes.name, dietTypes: recipes.dietTypes, allergenTags: recipes.allergenTags })
+      .from(dietPlanRecipeItems)
+      .innerJoin(dietPlanMeals, eq(dietPlanRecipeItems.dietPlanMealId, dietPlanMeals.id))
+      .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
+      .innerJoin(recipes, eq(dietPlanRecipeItems.recipeId, recipes.id))
+      .where(eq(dietPlanDays.dietPlanId, planId))
+    const forbidden = [...new Set(items.filter((r) => !isRecipeAllowedForDiet(r, plan.dietType)).map((r) => r.name))]
+    if (forbidden.length > 0) {
+      throw new Error(
+        `This plan contains dishes that are not ${plan.dietType}: ${forbidden.join(", ")}. Swap them out or regenerate the plan before approving.`
+      )
+    }
   }
 
   await db.update(dietPlans).set({ status: "approved" }).where(eq(dietPlans.id, planId))

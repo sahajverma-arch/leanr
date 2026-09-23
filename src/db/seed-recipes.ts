@@ -21,6 +21,9 @@ import { join } from "node:path"
 import { eq } from "drizzle-orm"
 
 import { classifyRecipeDietTypes } from "@/lib/foods/recipe-diet-classifier"
+import { evidenceSafeDietTypes } from "@/lib/foods/recipe-animal-content"
+import { parseCsvRows } from "@/lib/foods/csv-parser"
+import { loadIngredientTextByRecipe, type IngredientTextIndex } from "@/lib/foods/recipe-ingredient-text"
 import { normalizeRecipeAllergenTags } from "@/lib/foods/recipe-allergen-normalize"
 import { normalizeRecipeConsistency } from "@/lib/foods/recipe-consistency-normalize"
 import { normalizeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
@@ -59,7 +62,12 @@ function normalizePriority(raw: string): "primary" | "secondary" | null {
   return null
 }
 
-function buildRecipeValues(row: RawRecipeRow, overrides: CurationOverrideTracker, recipeUrl: string | null) {
+function buildRecipeValues(
+  row: RawRecipeRow,
+  overrides: CurationOverrideTracker,
+  recipeUrl: string | null,
+  ingredientText: IngredientTextIndex
+) {
   const dietClassification = classifyRecipeDietTypes(row.dietPrefRaw)
   const allergenNormalization = normalizeRecipeAllergenTags(row.allergenRaw)
   const cuisine = normalizeCuisine(row.cuisineRaw)
@@ -79,11 +87,21 @@ function buildRecipeValues(row: RawRecipeRow, overrides: CurationOverrideTracker
   if (dietClassification.containsFish) allergenTags.add("fish")
   if (dietClassification.containsSeafood) allergenTags.add("seafood")
 
+  // The Diet Pref column alone is NOT trusted: it labelled real fish, prawn
+  // and mutton dishes VEGETARIAN (and VEGAN). The dish's own name, allergen
+  // column and ingredient list can each veto a label — see
+  // recipe-animal-content.ts. The runtime re-applies this on every read.
+  const dietTypes = evidenceSafeDietTypes(dietClassification.dietTypes, {
+    name: row.name,
+    allergenTags: [...allergenTags],
+    ingredientsText: ingredientText.byId.get(row.recipeId) ?? ingredientText.byName.get(row.name.toLowerCase()) ?? null,
+  })
+
   return {
     values: {
       recipeId: row.recipeId,
       name: row.name,
-      dietTypes: dietClassification.dietTypes,
+      dietTypes,
       cuisine,
       category,
       macroCategory: row.macroCategoryRaw.trim() || null,
@@ -113,6 +131,7 @@ function buildRecipeValues(row: RawRecipeRow, overrides: CurationOverrideTracker
     },
     diagnostics: {
       unclassifiedDietTokens: dietClassification.unclassifiedTokens,
+      dietLabelsVetoed: dietClassification.dietTypes.filter((d) => !dietTypes.includes(d)),
       unclassifiedAllergenTokens: allergenNormalization.unclassifiedTokens,
       cuisineWasRelabeled: cuisine === "General" && row.cuisineRaw.trim() !== "General" && row.cuisineRaw.trim() !== "Gujrati",
       rawCuisine: row.cuisineRaw,
@@ -132,6 +151,11 @@ async function main() {
   const parsed = parseRecipeCsv(csvText)
 
   console.log(`Parsed ${parsed.rows.length} real recipe rows (${parsed.garbageRowCount} garbage row(s) dropped).`)
+
+  // Ingredient lists — independent evidence for the diet-type check.
+  const ingredientText = loadIngredientTextByRecipe(
+    parseCsvRows(readFileSync(join(process.cwd(), "src/db/seed-data/recipe_ingredients.csv"), "utf8"))
+  )
 
   // Public recipe-page links, matched by name against the dietitian's
   // hyperlink workbook export. Display metadata only — nothing here can
@@ -163,6 +187,7 @@ async function main() {
   const commonalityDistribution = new Map<number, number>()
   const priorityDistribution = new Map<string, number>()
   const overrides = new CurationOverrideTracker()
+  const dietLabelVetoes: string[] = []
 
   const existingByName = new Map<string, string>()
   for (const r of await db.select({ id: recipes.id, name: recipes.name }).from(recipes)) {
@@ -173,7 +198,8 @@ async function main() {
   let inserted = 0
   let updated = 0
   for (const row of parsed.rows) {
-    const { values, diagnostics } = buildRecipeValues(row, overrides, links.urlByRecipeName.get(row.name) ?? null)
+    const { values, diagnostics } = buildRecipeValues(row, overrides, links.urlByRecipeName.get(row.name) ?? null, ingredientText)
+    if (diagnostics.dietLabelsVetoed.length > 0) dietLabelVetoes.push(`${row.name} (dropped ${diagnostics.dietLabelsVetoed.join(", ")})`)
 
     diagnostics.unclassifiedDietTokens.forEach((t) => unclassifiedDietTokens.add(t))
     diagnostics.unclassifiedAllergenTokens.forEach((t) => unclassifiedAllergenTokens.add(t))
@@ -224,6 +250,8 @@ async function main() {
     unmatchedOverrides.category.forEach((n) => console.log(`    category: "${n}"`))
     unmatchedOverrides.season.forEach((n) => console.log(`    season: "${n}"`))
   }
+  console.log(`Diet labels vetoed by the dish's own name/allergens/ingredients: ${dietLabelVetoes.length}`)
+  dietLabelVetoes.forEach((v) => console.log(`  - ${v}`))
   console.log(`Categories falling to "other" bucket (extend recipe-category.ts):`)
   for (const [cat, names] of otherCategoryNames) {
     console.log(`  "${cat}" (${names.length}) — e.g. ${names.slice(0, 3).join(", ")}`)

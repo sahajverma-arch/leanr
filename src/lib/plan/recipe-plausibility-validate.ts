@@ -5,6 +5,7 @@
  * model exactly which kind of problem it needs to fix.
  */
 
+import { isAnimalProteinRecipe, isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
 import { DAL_BUCKET, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MEAT_CONFLICTING_BUCKETS, STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { isMustHaveSatisfied } from "./recipe-pairing"
@@ -77,7 +78,7 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
       // from a non-veg meal for exactly this reason; this check was missing
       // that same exemption, so it silently disagreed with the fallback's
       // own convention until a live non-vegetarian generation surfaced it.
-      const isAnimalProtein = !item.recipe.dietTypes.includes("vegetarian")
+      const isAnimalProtein = isAnimalProteinRecipe(item.recipe)
       if (isAnimalProtein) hasRealAnimalProtein = true
       // A dish's own bucket can land on dal_curry via the curry-name
       // reclassification (e.g. "Chicken Curry" itself) — that's the meat
@@ -114,7 +115,7 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
       // Defense-in-depth: the prompt pool was already pre-filtered by these
       // constraints, but a fuzzy-tier resolution could in principle land on
       // an ineligible recipe — this is the last checkpoint before pricing.
-      if (!item.recipe.dietTypes.includes(constraints.dietType)) {
+      if (!isRecipeAllowedForDiet(item.recipe, constraints.dietType)) {
         problems.push(`${meal.slot}'s "${item.recipe.name}" is not eligible for diet type "${constraints.dietType}"`)
       }
       if (!constraints.eligibleCuisines.includes(item.recipe.cuisine)) {
