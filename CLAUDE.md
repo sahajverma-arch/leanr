@@ -1332,6 +1332,39 @@ bounds: a throttled call drops one candidate instead of failing the request. `at
 cannot drift apart on how a week is built, and the deterministic fallback selector is still used, but
 only if *every* one of the N calls failed.
 
+### Regional identity — the client's own cuisine on every day (2026-09-23)
+
+A Gujarati client got a week with **3 Gujarati dishes out of 72** (Tofu Chilli, Guacamole, Shirataki
+rice instead). Three causes, all measured:
+1. **The data has no regional lunch/dinner.** All 19 Gujarati recipes are theplas and farsan — there
+   is no Gujarati dal, kadhi, shaak or rotli anywhere in the 1222-recipe CSV, under any cuisine label
+   (checked). A regional lunch can only be composed from general dishes (roti, dal, rice, sabzi,
+   kadhi, chaas). Real Gujarati mains need to be ADDED to the dataset with verified nutrition — that
+   is a data task for a dietitian, not something code can invent.
+2. **Nothing held the model to the cuisine.** It was shown ~1000 dishes, 19 of them Gujarati, with
+   "cuisine Gujarati" mentioned once. `recipe-prompt.ts`'s `formatRegionalSection()` now names the
+   client's own-cuisine dishes, requires one every day, and describes the region's home
+   lunch/dinner pattern (`REGIONAL_MEAL_PATTERNS`, one line per cuisine, in terms of dishes the pool
+   actually has). Not added for "General" clients.
+3. **Macro repair was deleting what the model got right.** With the prompt fixed, the model chose
+   Methi Thepla, Lauki Dhokla, Khakhra and khichdi — and `recipe-repair.ts`, chasing protein alone,
+   swapped them for Oats Chilla, Paneer Puff and Chia Porridge, leaving a day with none. Now an
+   own-cuisine dish may only be swapped for another own-cuisine dish; macros are still repaired
+   through every other dish.
+
+Plus a code guarantee, since a prompt rule is not one: `ensureRegionalDish()` runs at the end of
+every `repairDay()` and, if a day has no own-cuisine dish, swaps one in (same category bucket,
+re-balanced, no new plausibility problem, weekly repeat cap respected) — but only if the day's worst
+macro stays within `REGIONAL_DEVIATION_CEILING` (6%) or no worse than it already was. Cuisine is worth
+a little macro slack, never a failed day. Also fixed: `recipe-category.ts` sent all 9 "Thepla"
+recipes to the `other` bucket, so a thepla could never stand in for a chilla or roti; thepla is now
+`bread` and tikki is `snack`.
+
+Measured on Dhruti's real target, live: 3 → **16 Gujarati dishes of 70, at least 2 on every day**,
+weekly average within 2% on every macro, zero non-veg. **Still open:** repair can still swap a
+generic home dish (a khichdi) for a porridge when chasing protein — cuisine protection covers only
+dishes tagged with the client's cuisine, and Gujarati dinners (khichdi-kadhi) are General-tagged.
+
 ### Diet type is decided by the dish's evidence, not its label (2026-09-23)
 
 **A vegetarian client was served fish on 6 of 7 days.** Dhruti (vegetarian, Gujarati) got Goan Fish
@@ -2293,6 +2326,30 @@ stores the override in force at generation, and plan edits read that snapshot, n
 Otherwise changing a week's numbers later would re-aim an existing plan's re-balances. Saving does
 not regenerate a plan. THE ONE RULE is untouched: these are dietitian-typed numbers, and no model
 ever proposes them.
+
+## Meal notes (2026-09-24)
+
+A dietitian can write a note on any meal of a draft plan: what else the client needs to make or eat
+it ("soak the rajma overnight", "jeera-hing tadka", "have with a glass of chaas"). Stored in
+`diet_plan_meals.note` (`20260924120000_meal_notes.sql`), one per day × slot. There is a "use for
+this meal on every day" option, which writes the same text to that slot's 7 rows. After that,
+each day's note can be edited on its own. Works on both engines. Locked once approved, like every
+other edit.
+
+**Where it shows:** on the plan page under the meal's foods (`meal-note.tsx`), and in the PDF in
+the same cell under the dishes. It goes under the dishes, not on a separate notes page, so the
+client reads it next to the meal it is about.
+
+**Validation (`meal-note.ts`, run in the dialog as you type and again on the server):** 300
+characters at most, so a day still fits on one PDF page. The note must also use characters the
+PDF font can print. The PDF uses built-in Helvetica (WinAnsi), which prints the wrong glyph for
+anything outside that set instead of raising an error. So Hindi and emoji are refused with a clear
+message, and "→"/"₹" are replaced with plain equivalents. Validation errors are *returned* from
+`setMealNote`, not thrown, because Next.js hides a thrown Server Action message in production.
+
+Display text only. A note is never read by the balancer, a validator or a target, and no model
+sees it. "Add 1 tsp ghee" in a note does not change the meal's macros, and the dialog tells the
+dietitian this.
 
 ## Rounding & precision
 - All intermediate maths unrounded. Round only at display.

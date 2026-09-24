@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ComposedMealCell } from "@/components/plan/composed-meal-cell"
+import { MealNote } from "@/components/plan/meal-note"
 import { MacroDonut } from "@/components/plan/macro-donut"
 import { PlanActionsBar } from "@/components/plan/plan-actions-bar"
 import { formatBmi, formatGrams, formatKcal, formatWeight } from "@/lib/format"
@@ -198,6 +199,13 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
                       vegetableDishCombinations={vegetableDishCombinations}
                       vegetableDishCombinationMembers={vegetableDishCombinationMembers}
                       rotationDay={day.dayIndex + (plan.weekNumber - 1) * 7}
+                    />
+                    <MealNote
+                      mealId={meal.id}
+                      slotLabel={meal.slotLabel}
+                      dayLabel={day.dateLabel}
+                      note={meal.note}
+                      editable={editable}
                     />
                   </TableCell>
                   <TableCell className="text-right align-top">{formatKcal(meal.totals.kcal)}</TableCell>

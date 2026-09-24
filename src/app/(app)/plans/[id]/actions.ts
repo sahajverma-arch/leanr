@@ -1,6 +1,6 @@
 "use server"
 
-import { and, eq } from "drizzle-orm"
+import { and, eq, inArray } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
@@ -29,6 +29,7 @@ import {
   writePortionToItem,
   type PlanItemIngredientState,
 } from "@/lib/plan/plan-item-ingredients"
+import { MealNoteValidationError, normalizeMealNote } from "@/lib/plan/meal-note"
 import { macroProfileTags, type MacroProfileTag } from "@/lib/plan/recipe-macro-profile"
 import { MANUAL_GRAMS_CEILING_G, MANUAL_GRAMS_FLOOR_G } from "@/lib/plan/recipe-quantity-step"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
@@ -538,4 +539,72 @@ export async function addPlanItem(mealId: string, recipeId: string): Promise<voi
   })
 
   revalidatePath(`/plans/${loaded.ctx.planId}`)
+}
+
+// ---------------------------------------------------------------------------
+// Meal notes
+// ---------------------------------------------------------------------------
+
+export type SetMealNoteResult = { ok: true; mealsUpdated: number } | { ok: false; error: string }
+
+/**
+ * Saves (or, with an empty note, clears) the dietitian's note on one meal.
+ * With `applyToSameSlotEveryDay`, the same note is written to that slot on
+ * every day of the plan — "every lunch: have with a glass of chaas" — which
+ * is just the same write to seven rows; each day's note stays independently
+ * editable afterwards.
+ *
+ * Works for both engines: a note is display text, so it never touches the
+ * items, re-balances nothing and recomputes nothing. Locked once the plan is
+ * approved, like every other edit, since the approved PDF is what the client
+ * was given.
+ *
+ * A validation problem (too long, a character the PDF font can't print) is
+ * RETURNED rather than thrown, so its message reaches the dialog intact —
+ * Next.js replaces a thrown Server Action error's message in production.
+ */
+export async function setMealNote(
+  mealId: string,
+  note: string,
+  applyToSameSlotEveryDay: boolean
+): Promise<SetMealNoteResult> {
+  await requireStaffUser()
+  mealId = uuidSchema.parse(mealId)
+  const rawNote = z.string().max(5000).parse(note)
+  const applyAll = z.boolean().parse(applyToSameSlotEveryDay)
+
+  let normalized: string | null
+  try {
+    normalized = normalizeMealNote(rawNote)
+  } catch (err) {
+    if (err instanceof MealNoteValidationError) return { ok: false, error: err.message }
+    throw err
+  }
+
+  const [row] = await db
+    .select({ slot: dietPlanMeals.slot, planId: dietPlans.id, status: dietPlans.status })
+    .from(dietPlanMeals)
+    .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
+    .innerJoin(dietPlans, eq(dietPlanDays.dietPlanId, dietPlans.id))
+    .where(eq(dietPlanMeals.id, mealId))
+    .limit(1)
+  if (!row) return { ok: false, error: "Meal not found." }
+  if (row.status === "approved") return { ok: false, error: "This plan is already approved - edits are locked." }
+
+  let mealsUpdated = 1
+  if (applyAll) {
+    const sameSlot = await db
+      .select({ id: dietPlanMeals.id })
+      .from(dietPlanMeals)
+      .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
+      .where(and(eq(dietPlanDays.dietPlanId, row.planId), eq(dietPlanMeals.slot, row.slot)))
+    const ids = sameSlot.map((m) => m.id)
+    await db.update(dietPlanMeals).set({ note: normalized }).where(inArray(dietPlanMeals.id, ids))
+    mealsUpdated = ids.length
+  } else {
+    await db.update(dietPlanMeals).set({ note: normalized }).where(eq(dietPlanMeals.id, mealId))
+  }
+
+  revalidatePath(`/plans/${row.planId}`)
+  return { ok: true, mealsUpdated }
 }

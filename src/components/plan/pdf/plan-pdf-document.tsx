@@ -49,6 +49,8 @@ const styles = StyleSheet.create({
   cellMeal: { width: "10%", padding: 4, fontFamily: "Helvetica-Bold" },
   cellFoods: { width: "38%", padding: 4 },
   cookingFatNote: { fontSize: 7, color: "#6b7280", fontStyle: "italic", marginTop: 2 },
+  mealNote: { fontSize: 7.5, color: "#1f2937", marginTop: 3, paddingLeft: 4, borderLeftWidth: 1.5, borderLeftColor: "#0284c7", lineHeight: 1.35 },
+  mealNoteLead: { fontFamily: "Helvetica-Bold", color: "#0369a1" },
   recipeLink: { color: "#1d4ed8", textDecoration: "underline" },
   cellNum: { width: "8.8%", padding: 4, textAlign: "right" },
   th: { fontSize: 7, fontFamily: "Helvetica-Bold", color: "#6b7280", textTransform: "uppercase" },
@@ -284,6 +286,17 @@ export function PlanPdfDocument({ model }: { model: PlanViewModel }) {
                       {cookingFatGroups.length > 0 ? (
                         <Text style={styles.cookingFatNote}>
                           Cooking fat: {cookingFatGroups.map(formatComposedGroupPlainText).join(", ")}
+                        </Text>
+                      ) : null}
+                      {/* The dietitian's note for this meal (meal-note.ts) —
+                          what else the client needs to make or eat it. Kept
+                          in the foods cell, directly under the dishes it is
+                          about, rather than in a separate notes page the
+                          client would have to cross-reference. */}
+                      {meal.note ? (
+                        <Text style={styles.mealNote}>
+                          <Text style={styles.mealNoteLead}>Note: </Text>
+                          {pdfSafeText(meal.note)}
                         </Text>
                       ) : null}
                     </View>

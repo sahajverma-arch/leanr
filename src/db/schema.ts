@@ -430,6 +430,10 @@ export const dietPlanMeals = pgTable("diet_plan_meals", {
   // Observability only — never read by nutrition math. Nullable, set null
   // on archetype deletion so retiring an archetype can't corrupt history.
   archetypeId: uuid("archetype_id").references(() => mealArchetypes.id, { onDelete: "set null" }),
+  // Dietitian's free-text note for this meal, printed under its foods on the
+  // plan page and PDF. Display only — never read by any nutrition math, never
+  // sent to a model. Validated by src/lib/plan/meal-note.ts.
+  note: text("note"),
 })
 
 export type DietPlanMeal = typeof dietPlanMeals.$inferSelect

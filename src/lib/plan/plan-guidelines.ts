@@ -117,6 +117,8 @@ export interface PlanViewMeal {
    * role at all".
    */
   archetypeDishFamilyIdsByExchangeType: Partial<Record<ExchangeCode, string[]>>
+  /** Dietitian's note for this meal (diet_plan_meals.note) — null when there is none. Display only. */
+  note: string | null
 }
 
 export interface PlanViewDay {

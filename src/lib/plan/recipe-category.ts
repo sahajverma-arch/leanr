@@ -44,8 +44,11 @@ export function recipeCategoryBucket(category: string, name?: string): RecipeCat
   if (c.includes("sabzi")) return name && /curry/i.test(name) ? "dal_curry" : "sabzi"
   if (c.includes("curry") || c.includes("dal") || c.includes("khichdi") || c.includes("khichuri")) return "dal_curry"
   if (c.includes("rice") || c.includes("pulao") || c.includes("biryani")) return "rice_pulao"
-  if (c.includes("roti") || c.includes("paratha") || c.includes("chila") || c.includes("wrap") || c.includes("sandwich")) return "bread"
-  if (c.includes("snack") || c.includes("chaat")) return "snack"
+  // "Thepla" is a Gujarati flatbread — a roti in every structural sense. Left
+  // out, all 9 thepla recipes fell to "other" and could never stand in for a
+  // chilla or roti. "Tikki" is a patty snack (Aloo Tikki, Dhebra).
+  if (c.includes("roti") || c.includes("paratha") || c.includes("chila") || c.includes("thepla") || c.includes("wrap") || c.includes("sandwich")) return "bread"
+  if (c.includes("snack") || c.includes("chaat") || c.includes("tikki")) return "snack"
   if (c.includes("dessert")) return "dessert"
   if (c.includes("salad") || c.includes("raita")) return "salad"
   if (c.includes("soup")) return "soup"

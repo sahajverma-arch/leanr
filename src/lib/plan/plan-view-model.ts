@@ -289,6 +289,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
       archetypeDishFamilyIdsByExchangeType: meal.archetypeId
         ? (dishFamilyIdsByExchangeTypeByArchetype.get(meal.archetypeId) ?? {})
         : {},
+      note: meal.note,
     })
     mealsByDayId.set(meal.dietPlanDayId, list)
   }

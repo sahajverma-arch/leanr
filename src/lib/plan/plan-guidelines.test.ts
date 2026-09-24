@@ -44,11 +44,11 @@ function makeRoadmapOutput(overrides: Partial<RoadmapResult> = {}): RoadmapResul
   }
 }
 
-function makeDay(dayIndex: number, mealsInput: Omit<PlanViewMeal, "id" | "archetypeId" | "archetypeName" | "archetypeDishFamilyIdsByExchangeType">[]): PlanViewDay {
+function makeDay(dayIndex: number, mealsInput: Omit<PlanViewMeal, "id" | "archetypeId" | "archetypeName" | "archetypeDishFamilyIdsByExchangeType" | "note">[]): PlanViewDay {
   // `id` (the diet_plan_meals row) only exists so the plan page can add an
   // item to a specific meal — nothing in buildGuidelines reads it, so the
   // fixtures synthesise one rather than every case restating it.
-  const meals: PlanViewMeal[] = mealsInput.map((m, i) => ({ ...m, id: `meal-${dayIndex}-${i}`, archetypeId: null, archetypeName: null, archetypeDishFamilyIdsByExchangeType: {} }))
+  const meals: PlanViewMeal[] = mealsInput.map((m, i) => ({ ...m, id: `meal-${dayIndex}-${i}`, archetypeId: null, archetypeName: null, archetypeDishFamilyIdsByExchangeType: {}, note: null }))
   const totals = meals.reduce(
     (acc, m) => ({
       kcal: acc.kcal + m.totals.kcal,

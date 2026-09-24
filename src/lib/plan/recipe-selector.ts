@@ -352,7 +352,7 @@ export async function selectRecipes(
   // pool. The pool is exactly input.allRecipesById — the same rows the
   // model was offered — so a repair can never reach a dish the client was
   // not already eligible for.
-  const repair: RepairContext = { pool: buildRepairPool(input.allRecipesById.values()), constraints }
+  const repair: RepairContext = { pool: buildRepairPool(input.allRecipesById.values(), input.cuisine), constraints }
 
   // BEST-OF-N PATH. A deliberate, confirmed change of acceptance rule for
   // this path only: the week is gated on its WEEKLY AVERAGE, which is

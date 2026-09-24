@@ -37,6 +37,7 @@ import { balanceDayToTargets } from "./recipe-balancer"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import type { DailyRecipeTarget, GroundedRecipeDay, GroundedRecipeItem, RecipeAchievedMacros, RecipeForPipeline } from "./recipe-types"
+import { RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
 import { MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
 
 /**
@@ -88,6 +89,12 @@ export interface RepairSwap {
 
 export interface RepairPool {
   byBucket: Map<RecipeCategoryBucket, RecipeForPipeline[]>
+  /**
+   * The client's OWN-cuisine dishes (e.g. every Gujarati recipe), bucketed
+   * the same way. Empty for a "General" client, or a cuisine with no native
+   * recipes — then the regional pass is a no-op.
+   */
+  regionalByBucket: Map<RecipeCategoryBucket, RecipeForPipeline[]>
 }
 
 /**
@@ -100,16 +107,29 @@ export interface RepairPool {
  * Each bucket is sorted by id so the candidate order — and therefore the
  * repaired week — is deterministic for a fixed input.
  */
-export function buildRepairPool(pool: Iterable<RecipeForPipeline>): RepairPool {
+export function buildRepairPool(pool: Iterable<RecipeForPipeline>, clientCuisine?: string): RepairPool {
   const byBucket = new Map<RecipeCategoryBucket, RecipeForPipeline[]>()
+  const regionalByBucket = new Map<RecipeCategoryBucket, RecipeForPipeline[]>()
+  const regional = clientCuisine && clientCuisine !== "General" ? clientCuisine : null
   for (const recipe of pool) {
     const bucket = recipeCategoryBucket(recipe.category, recipe.name)
     const existing = byBucket.get(bucket)
     if (existing) existing.push(recipe)
     else byBucket.set(bucket, [recipe])
+    if (regional && recipe.cuisine === regional) {
+      const own = regionalByBucket.get(bucket)
+      if (own) own.push(recipe)
+      else regionalByBucket.set(bucket, [recipe])
+    }
   }
-  for (const recipes of byBucket.values()) recipes.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-  return { byBucket }
+  const byId = (a: RecipeForPipeline, b: RecipeForPipeline) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  for (const recipes of byBucket.values()) recipes.sort(byId)
+  for (const recipes of regionalByBucket.values()) recipes.sort(byId)
+  return { byBucket, regionalByBucket }
+}
+
+function regionalRecipeIds(pool: RepairPool): Set<string> {
+  return new Set([...pool.regionalByBucket.values()].flat().map((r) => r.id))
 }
 
 /** Worst single-macro deviation as a fraction, directly comparable to RECIPE_MACRO_TOLERANCE. */
@@ -214,6 +234,7 @@ export function repairDay(
 
   let current = day
   let currentScore = worstRelativeDeviation(current.totals, target)
+  const regionalIds = regionalRecipeIds(pool)
 
   for (let round = 0; round < MAX_SWAPS_PER_DAY; round++) {
     if (currentScore <= REPAIR_TARGET_DEVIATION) break
@@ -245,7 +266,14 @@ export function repairDay(
       const namesInMeal = new Set(meal.items.map((item) => item.recipe.name))
       meal.items.forEach((item, itemIndex) => {
         const bucket = recipeCategoryBucket(item.recipe.category, item.recipe.name)
-        const alternatives = pool.byBucket.get(bucket)
+        // A dish from the client's own cuisine may only be replaced by
+        // another from that cuisine. Measured on a real Gujarati week: the
+        // model chose Methi Thepla, Lauki Dhokla, Khakhra and khichdi, and
+        // this repair — chasing protein alone — swapped them for Oats
+        // Chilla, Paneer Puff and Chia Porridge, leaving a day with no
+        // Gujarati dish at all. Macros are still repaired freely through
+        // every other dish on the day.
+        const alternatives = regionalIds.has(item.recipe.id) ? pool.regionalByBucket.get(bucket) : pool.byBucket.get(bucket)
         if (!alternatives) return
 
         const own = contributionOf(item)
@@ -310,6 +338,124 @@ export function repairDay(
     swaps.push(best.swap)
     current = best.day
     currentScore = best.score
+  }
+
+  const regional = ensureRegionalDish(current, target, pool, constraints, weeklyCounts)
+  return { day: regional.day, swaps: [...swaps, ...regional.swaps] }
+}
+
+/**
+ * Every day should carry at least this many dishes from the client's own
+ * cuisine. One, not more: the dataset's regional recipes are mostly
+ * breakfast/evening dishes (every Gujarati recipe is a thepla or farsan),
+ * so a higher floor would force the same handful onto the plate every day.
+ */
+export const MIN_REGIONAL_DISHES_PER_DAY = 1
+
+/**
+ * A regional swap may move a day's worst macro up to here, but never make a
+ * day that is already worse than this any worse. Below RECIPE_MACRO_TOLERANCE
+ * on purpose: a client's cuisine is worth a little macro slack, not a day
+ * parked on the edge of the gate.
+ */
+export const REGIONAL_DEVIATION_CEILING = RECIPE_MACRO_TOLERANCE * 0.75
+
+/**
+ * WHY THIS EXISTS. A Gujarati client (Dhruti, 2026-09-23) got a week of Tofu
+ * Chilli, Guacamole and Shirataki rice with 3 Gujarati dishes out of 72 — the
+ * model is shown ~1000 dishes, 19 of them Gujarati, and nothing held it to
+ * the cuisine. The prompt now asks for a regional dish every day; this
+ * guarantees it in code, because a prompt rule alone is not a guarantee.
+ *
+ * Same move set and safety rules as the macro repair above — swap one dish
+ * for an own-cuisine dish of the SAME category bucket (a chilla for a
+ * thepla, a chaat for a dhokla), re-balance, never add a plausibility
+ * problem, never breach the weekly repeat cap — plus a macro rule: the swap
+ * must leave the day's worst macro within REGIONAL_DEVIATION_CEILING, or no
+ * worse than it already was. So a day only goes without a regional dish
+ * when no swap can keep it on target.
+ */
+function ensureRegionalDish(
+  day: GroundedRecipeDay,
+  target: DailyRecipeTarget,
+  pool: RepairPool,
+  constraints: ClientRecipeConstraints,
+  weeklyCounts: Map<string, number>
+): { day: GroundedRecipeDay; swaps: RepairSwap[] } {
+  const swaps: RepairSwap[] = []
+  if (pool.regionalByBucket.size === 0) return { day, swaps }
+  if (day.meals.some((meal) => meal.items.some((item) => item.gramsLocked))) return { day, swaps }
+
+  const regionalIds = regionalRecipeIds(pool)
+  const regionalCount = (d: GroundedRecipeDay) =>
+    d.meals.reduce((n, meal) => n + meal.items.filter((item) => regionalIds.has(item.recipe.id)).length, 0)
+
+  let current = day
+  while (regionalCount(current) < MIN_REGIONAL_DISHES_PER_DAY) {
+    const allowed = Math.max(worstRelativeDeviation(current.totals, target), REGIONAL_DEVIATION_CEILING)
+    const baselineProblems = describePlausibilityProblems(current, constraints).length
+    const dayTotals: MacroTotals = {
+      kcal: current.totals.kcal,
+      proteinG: current.totals.proteinG,
+      carbsG: current.totals.carbsG,
+      fatG: current.totals.fatG,
+    }
+
+    const candidates: { mealIndex: number; itemIndex: number; recipe: RecipeForPipeline; estimate: number }[] = []
+    current.meals.forEach((meal, mealIndex) => {
+      const namesInMeal = new Set(meal.items.map((item) => item.recipe.name))
+      meal.items.forEach((item, itemIndex) => {
+        const alternatives = pool.regionalByBucket.get(recipeCategoryBucket(item.recipe.category, item.recipe.name))
+        if (!alternatives) return
+        const own = contributionOf(item)
+        const othersTotals: MacroTotals = {
+          kcal: dayTotals.kcal - own.kcal,
+          proteinG: dayTotals.proteinG - own.proteinG,
+          carbsG: dayTotals.carbsG - own.carbsG,
+          fatG: dayTotals.fatG - own.fatG,
+        }
+        for (const recipe of alternatives) {
+          if (namesInMeal.has(recipe.name)) continue
+          if ((weeklyCounts.get(recipe.name) ?? 0) >= MAX_RECIPE_REPEATS_PER_WEEK) continue
+          candidates.push({ mealIndex, itemIndex, recipe, estimate: bestAchievableWorst(othersTotals, recipe, target) })
+        }
+      })
+    })
+    // Least-used first among equals, so the week spreads across the region's
+    // dishes instead of leaning on one.
+    candidates.sort(
+      (a, b) =>
+        a.estimate - b.estimate ||
+        (weeklyCounts.get(a.recipe.name) ?? 0) - (weeklyCounts.get(b.recipe.name) ?? 0) ||
+        (a.recipe.id < b.recipe.id ? -1 : 1)
+    )
+
+    let best: { day: GroundedRecipeDay; score: number; swap: RepairSwap } | null = null
+    for (const candidate of candidates.slice(0, MAX_FULL_EVALUATIONS_PER_ROUND)) {
+      if (candidate.estimate > allowed) continue
+      const rebalanced = balanceDayToTargets(replaceItem(current, candidate.mealIndex, candidate.itemIndex, candidate.recipe), target)
+      if (describePlausibilityProblems(rebalanced, constraints).length > baselineProblems) continue
+      const score = worstRelativeDeviation(rebalanced.totals, target)
+      if (score > allowed) continue
+      if (best === null || score < best.score) {
+        best = {
+          day: rebalanced,
+          score,
+          swap: {
+            dayIndex: current.dayIndex,
+            slot: current.meals[candidate.mealIndex].slot,
+            from: current.meals[candidate.mealIndex].items[candidate.itemIndex].recipe.name,
+            to: candidate.recipe.name,
+          },
+        }
+      }
+    }
+    if (best === null) break
+
+    weeklyCounts.set(best.swap.from, Math.max(0, (weeklyCounts.get(best.swap.from) ?? 1) - 1))
+    weeklyCounts.set(best.swap.to, (weeklyCounts.get(best.swap.to) ?? 0) + 1)
+    swaps.push(best.swap)
+    current = best.day
   }
 
   return { day: current, swaps }

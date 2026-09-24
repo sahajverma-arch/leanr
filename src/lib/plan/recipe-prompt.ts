@@ -73,6 +73,59 @@ function formatDailyTarget(target: DailyRecipeTarget): string {
   )
 }
 
+/**
+ * How a home lunch and dinner are built in each region, in terms of dishes
+ * the pool actually has under generic names (roti, dal, rice, sabzi, kadhi).
+ * Needed because the dataset's regional recipes are almost all breakfast or
+ * snack dishes — e.g. all 19 Gujarati recipes are theplas and farsan — so a
+ * regional lunch can only be composed from the general pool, and the model
+ * has to be told what that looks like. Common culinary knowledge, not a
+ * nutrition claim: nothing here touches a number.
+ */
+const REGIONAL_MEAL_PATTERNS: Record<string, string> = {
+  Gujarati:
+    "A Gujarati home lunch is rotli (roti) + dal + bhaat (rice) + a simple shaak (vegetable sabzi — lauki, bhindi, tindora, cabbage, brinjal, potato), often with kadhi and chaas. Dinner is lighter: khichdi with kadhi, or thepla/bhakri with shaak. Breakfast and evening are farsan and flatbreads: thepla, dhokla, khandvi, handvo, muthiya, khakhra.",
+  "North Indian":
+    "A North Indian home lunch/dinner is roti or paratha + dal (or rajma/chole) + a sabzi, with rice sometimes and raita or salad. Breakfast is paratha, poha, chilla or dalia.",
+  Punjabi:
+    "A Punjabi home lunch/dinner is roti or paratha + dal (dal makhani, rajma, chole) + a sabzi, with lassi, curd or raita. Breakfast is paratha with curd.",
+  Rajasthani:
+    "A Rajasthani home lunch/dinner is bajra or wheat roti + dal or kadhi + a dry sabzi (gatte, ker sangri style), with chaas. Breakfast is paratha, poha or cheela.",
+  "South Indian":
+    "A South Indian home lunch is rice with sambar or rasam + a poriyal/thoran (dry vegetable) + curd or curd rice. Breakfast and dinner are idli, dosa, uttapam, upma or pongal with sambar/chutney.",
+  Maharashtrian:
+    "A Maharashtrian home lunch/dinner is poli (roti) or bhakri + varan/amti (dal) + bhaji (vegetable) + rice, sometimes usal. Breakfast is poha, upma, thalipeeth or sabudana.",
+  Bengali:
+    "A Bengali home lunch is rice + dal + a vegetable torkari or bhaja, with fish curry only for non-vegetarian clients. Dinner is often roti with torkari. Breakfast is luchi-style breads, chire (poha) or muri.",
+  Hyderabadi:
+    "A Hyderabadi/Telugu home lunch is rice + pappu (dal) or sambar + a vegetable curry, with curd. Breakfast is idli, dosa, upma or pesarattu.",
+}
+
+/**
+ * Regional identity for a non-General client: name the client's own-cuisine
+ * dishes that are actually in the pool, ask for one every day, and describe
+ * the region's lunch/dinner pattern. recipe-repair.ts's regional pass then
+ * GUARANTEES the one-a-day minimum in code, so this is the first line of
+ * defence, not the only one. "" for a General client.
+ */
+export function formatRegionalSection(cuisine: string, pool: RecipeForPrompt[]): string {
+  if (cuisine === "General") return ""
+  const own = pool.filter((r) => r.cuisine === cuisine).map((r) => r.name)
+  const pattern = REGIONAL_MEAL_PATTERNS[cuisine]
+  const lines = [`Regional identity — this client eats ${cuisine} food:`]
+  if (own.length > 0) {
+    lines.push(
+      `- ${cuisine} dishes in the table: ${own.join(", ")}.`,
+      `- EVERY day must include at least one of these ${cuisine} dishes (usually at breakfast or evening). Spread them across the week — no single one more than twice.`
+    )
+  }
+  if (pattern) lines.push(`- ${pattern} Build lunch and dinner this way from the table's dishes.`)
+  lines.push(
+    `- Prefer everyday Indian home dishes that fit ${cuisine} eating over foreign-style dishes (pasta, guacamole, tofu stir-fries, shirataki rice) — use those only when nothing suitable fits the targets.`
+  )
+  return `\n${lines.join("\n")}\n`
+}
+
 /** Empty/absent (DIETITIAN_KNOWLEDGE_ENABLED off, or nothing retrieved) returns "" — the prompt is byte-identical to before this layer existed. */
 function formatKnowledgeSection(chunks?: RetrievedKnowledgeChunk[]): string {
   if (!chunks || chunks.length === 0) return ""
@@ -118,7 +171,7 @@ Daily targets (average across the week): ${formatDailyTarget(input.dailyTarget)}
 ${formatSlotStructureRules(input.slots.map((s) => s.slot))}
 Available recipes (choose ONLY from this list, copying the Name column EXACTLY):
 ${formatRecipeTable(input.eligibleRecipesForPrompt)}
-${formatKnowledgeSection(input.knowledgeChunks)}
+${formatRegionalSection(input.cuisine, input.eligibleRecipesForPrompt)}${formatKnowledgeSection(input.knowledgeChunks)}
 ${formatExamplesSection(input.dietPlanExamples)}
 Compose a full 7-day plan (dayIndex 0 through 6). For each day, assign recipes to every meal slot listed above.
 
@@ -148,7 +201,7 @@ Meal slots, in order: ${slotsLine}.
 ${formatSlotStructureRules(input.slots.map((s) => s.slot))}
 Available recipes (choose ONLY from this list, copying the Name column EXACTLY):
 ${formatRecipeTable(input.eligibleRecipesForPrompt)}
-${formatKnowledgeSection(input.knowledgeChunks)}
+${formatRegionalSection(input.cuisine, input.eligibleRecipesForPrompt)}${formatKnowledgeSection(input.knowledgeChunks)}
 ${formatExamplesSection(input.dietPlanExamples)}
 Choose DIFFERENT recipes for day ${day.dayIndex} that address the problems above — a different dish, not a different amount (you never specify amounts).
 
