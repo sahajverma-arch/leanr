@@ -2351,6 +2351,39 @@ Display text only. A note is never read by the balancer, a validator or a target
 sees it. "Add 1 tsp ghee" in a note does not change the meal's macros, and the dialog tells the
 dietitian this.
 
+## Weekly follow-up and the client page (2026-09-28)
+
+**Week 1 comes from counselling. Every later week needs a submitted weekly check-in first.** The
+check-in lives at `/clients/[clientId]/week/[week]`. It records how the week went: current weight
+(the only required answer), energy, sleep, digestion, adherence, cravings, eating out, activity,
+water, smoking/alcohol, stress, menstrual cycle (female clients only), outings planned, medicine and
+next week's target. Questions are in `src/lib/followup/checkin-questions.ts`, using the counselling
+bank's `Question` shape so `QuestionField` renders them. Stored in `weekly_checkins`, one row per
+(client, week), keyed on the client rather than a roadmap, because a recomputed roadmap does not
+restart the programme. The gate is `checkinGateError()` in `route.ts` (a 422), not only the UI. The
+plan page's old "Generate week N+1" button is now a link to that week's check-in.
+
+**The answers never move a number.** The dietitian sets the week's kcal/protein/carbs on the
+check-in page with the existing week-target editor. No model reads the check-in. THE ONE RULE is
+untouched.
+
+**Plans were never deleted. They were just not listed.** Every Generate saves a new row, and a
+real client had 7 week-1 versions that could only be reached from the redirect after generating.
+The client page now groups every plan by week (`client-weeks.ts`). **Exactly one version per week
+is the current plan**: the newest approved one, otherwise the newest draft. A newer draft never
+displaces an approved plan. The others are listed under "earlier versions". Each week shows the
+food target and what the plan actually gives (`diet_plans.achieved`, which every edit keeps
+current), plus any supplement.
+
+Two real bugs were fixed along the way:
+1. **Arbitrary previous week.** Week N+1 took "the previous week" from whichever week-N row the
+   database returned first. `loadPreviousWeekSeed()`/`loadPreviousWeekRecipeSeed()` now use
+   `pickCurrentPlan()` by client, the same plan the client page shows.
+2. **Cuisine lost on week 2.** "Generate next week" sent a recipe plan's `region` column, which
+   holds the CUISINE ("Gujarati"). `applyEngineDefault()` didn't recognise it and fell back to
+   "General", so every recipe client's week 2 lost its cuisine. A cuisine in `region` is now taken
+   as-is.
+
 ## Rounding & precision
 - All intermediate maths unrounded. Round only at display.
 - kcal, protein/carb/fat grams → integer at display.

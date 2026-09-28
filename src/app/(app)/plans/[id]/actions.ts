@@ -131,6 +131,8 @@ export async function swapPlanItem(itemId: string, newFoodId: string): Promise<v
     // re-balanced rather than a like-for-like substitution.
     const planId = await performRecipeSwap(itemId, newFoodId)
     revalidatePath(`/plans/${planId}`)
+    // The client page shows each week's kcal/protein — keep it current after every edit.
+    revalidatePath("/clients", "layout")
     return
   }
   if (ctx.plan.status === "approved") {
@@ -158,6 +160,7 @@ export async function swapPlanItem(itemId: string, newFoodId: string): Promise<v
   await db.update(dietPlanItems).set({ foodId: newFood.id, servingRawG }).where(eq(dietPlanItems.id, itemId))
 
   revalidatePath(`/plans/${ctx.plan.id}`)
+  revalidatePath("/clients", "layout")
 }
 
 export async function approvePlan(planId: string): Promise<void> {
@@ -204,6 +207,7 @@ export async function approvePlan(planId: string): Promise<void> {
 
   await db.update(dietPlans).set({ status: "approved" }).where(eq(dietPlans.id, planId))
   revalidatePath(`/plans/${planId}`)
+  revalidatePath("/clients", "layout")
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +330,7 @@ export async function deletePlanItem(itemId: string): Promise<void> {
   })
 
   revalidatePath(`/plans/${loaded.ctx.planId}`)
+  revalidatePath("/clients", "layout")
 }
 
 /**
@@ -360,6 +365,7 @@ export async function setPlanItemGrams(itemId: string, grams: number): Promise<v
   })
 
   revalidatePath(`/plans/${loaded.ctx.planId}`)
+  revalidatePath("/clients", "layout")
 }
 
 /**
@@ -432,6 +438,7 @@ export async function setPlanItemIngredientQuantity(
   })
 
   revalidatePath(`/plans/${loaded.ctx.planId}`)
+  revalidatePath("/clients", "layout")
 }
 
 /** Drop every ingredient change on an item and return it to the dish as generated. */
@@ -451,6 +458,7 @@ export async function resetPlanItemIngredients(itemId: string): Promise<void> {
   })
 
   revalidatePath(`/plans/${loaded.ctx.planId}`)
+  revalidatePath("/clients", "layout")
 }
 
 /** Hand the quantity back to the solver. The re-balance that follows immediately is free to move it. */
@@ -468,6 +476,7 @@ export async function unlockPlanItemGrams(itemId: string): Promise<void> {
   })
 
   revalidatePath(`/plans/${loaded.ctx.planId}`)
+  revalidatePath("/clients", "layout")
 }
 
 /**
@@ -539,6 +548,7 @@ export async function addPlanItem(mealId: string, recipeId: string): Promise<voi
   })
 
   revalidatePath(`/plans/${loaded.ctx.planId}`)
+  revalidatePath("/clients", "layout")
 }
 
 // ---------------------------------------------------------------------------
@@ -606,5 +616,6 @@ export async function setMealNote(
   }
 
   revalidatePath(`/plans/${row.planId}`)
+  revalidatePath("/clients", "layout")
   return { ok: true, mealsUpdated }
 }

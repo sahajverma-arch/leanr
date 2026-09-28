@@ -306,9 +306,8 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
 
       <PlanActionsBar
         planId={plan.id}
-        roadmapId={roadmap.id}
+        clientId={client.id}
         weekNumber={plan.weekNumber}
-        region={plan.region}
         status={plan.status}
         withinTolerance={withinTolerance}
       />

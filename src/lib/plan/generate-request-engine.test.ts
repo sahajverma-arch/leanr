@@ -33,6 +33,16 @@ describe("applyEngineDefault", () => {
     }
   })
 
+  it("keeps a cuisine sent back from a saved recipe plan's region column", () => {
+    // "Generate week N+1" sends diet_plans.region, which on a recipe plan
+    // holds the cuisine ("Gujarati"), not a template region ("gujarati").
+    for (const cuisine of ["Gujarati", "North Indian", "General"] as const) {
+      const out = applyEngineDefault({ ...UI_BODY, weekNumber: 2, region: cuisine }, true) as Record<string, unknown>
+      expect(out.engine).toBe("recipe")
+      expect(out.cuisine).toBe(cuisine)
+    }
+  })
+
   it("falls back to General for an unrecognised region rather than throwing", () => {
     const out = applyEngineDefault({ ...UI_BODY, region: "atlantis" }, true) as Record<string, unknown>
     expect(out.engine).toBe("recipe")

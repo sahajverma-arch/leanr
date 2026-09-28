@@ -141,6 +141,36 @@ export const roadmapWeekTargets = pgTable(
 
 export type RoadmapWeekTarget = typeof roadmapWeekTargets.$inferSelect
 
+/**
+ * The weekly follow-up a dietitian fills in before generating week 2, 3, ...
+ * Week 1 comes from counselling; a later week cannot be generated until its
+ * check-in is submitted (see /api/plan/generate). Questions and validation
+ * live in src/lib/followup/checkin-questions.ts.
+ *
+ * Keyed on (client, week), not on a roadmap: a recomputed roadmap does not
+ * restart the client's programme. The answers inform the dietitian only —
+ * they never move a target on their own and no model reads them.
+ */
+export const weeklyCheckins = pgTable(
+  "weekly_checkins",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    weekNumber: integer("week_number").notNull(),
+    status: text("status", { enum: ["draft", "submitted"] }).notNull().default("draft"),
+    answers: jsonb("answers").notNull().default({}),
+    createdBy: uuid("created_by").references(() => profiles.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  },
+  (t) => [unique("weekly_checkins_client_week_unique").on(t.clientId, t.weekNumber)]
+)
+
+export type WeeklyCheckin = typeof weeklyCheckins.$inferSelect
+
 /** Table 4.1 — Comprehensive Food Exchange List (11 rows). READ-ONLY at runtime. See CLAUDE.md "The exchange system". */
 export const exchangeTypes = pgTable("exchange_types", {
   code: text("code").primaryKey(),

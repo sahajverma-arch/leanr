@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import Link from "next/link"
+import { useTransition } from "react"
 import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
@@ -11,22 +11,18 @@ import { cn } from "@/lib/utils"
 
 export function PlanActionsBar({
   planId,
-  roadmapId,
+  clientId,
   weekNumber,
-  region,
   status,
   withinTolerance,
 }: {
   planId: string
-  roadmapId: string
+  clientId: string
   weekNumber: number
-  region: string
   status: "draft" | "approved"
   withinTolerance: boolean
 }) {
-  const router = useRouter()
   const [isPending, startTransition] = useTransition()
-  const [isGeneratingNext, setIsGeneratingNext] = useState(false)
 
   function handleApprove() {
     startTransition(async () => {
@@ -39,28 +35,6 @@ export function PlanActionsBar({
     })
   }
 
-  async function handleGenerateNextWeek() {
-    setIsGeneratingNext(true)
-    try {
-      const res = await fetch("/api/plan/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roadmapId, weekNumber: weekNumber + 1, region }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        toast.error(data.error ?? "Could not generate next week")
-        return
-      }
-      toast.success(`Week ${weekNumber + 1} plan generated.`)
-      router.push(`/plans/${data.dietPlanId}`)
-    } catch {
-      toast.error("Could not generate next week — network or server error")
-    } finally {
-      setIsGeneratingNext(false)
-    }
-  }
-
   return (
     <div className="flex flex-wrap items-center gap-3 border-t pt-4 print:hidden">
       {status === "approved" ? (
@@ -70,9 +44,14 @@ export function PlanActionsBar({
           {isPending ? "Approving…" : "Mark approved"}
         </Button>
       )}
-      <Button variant="outline" onClick={handleGenerateNextWeek} disabled={isGeneratingNext}>
-        {isGeneratingNext ? "Generating…" : `Generate week ${weekNumber + 1}`}
-      </Button>
+      {/* Week 2 onward starts from the weekly follow-up check-in, where the
+          dietitian also sets that week's numbers before generating. */}
+      <Link href={`/clients/${clientId}/week/${weekNumber + 1}`} className={cn(buttonVariants({ variant: "outline" }))}>
+        Week {weekNumber + 1} check-in
+      </Link>
+      <Link href={`/clients/${clientId}`} className={cn(buttonVariants({ variant: "ghost" }))}>
+        All weeks
+      </Link>
       <a href={`/api/plans/${planId}/pdf`} className={cn(buttonVariants({ variant: "outline" }))}>
         Export PDF
       </a>

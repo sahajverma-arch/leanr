@@ -36,6 +36,7 @@ import {
   roadmapWeekTargets,
   vegetableDishCombinationMembers,
   vegetableDishCombinations,
+  weeklyCheckins,
 } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
@@ -87,6 +88,7 @@ import {
 } from "@/lib/plan/quantity"
 import { RateLimitExceededError, checkAndRecordPlanGenerationRequest } from "@/lib/plan/rate-limit"
 import { isSameOrigin } from "@/lib/require-same-origin"
+import { checkinGateError, pickCurrentPlan } from "@/lib/followup/client-weeks"
 
 export const runtime = "nodejs"
 // This was 60 (chosen for Vercel Hobby's old 60s ceiling) and that cap was
@@ -166,7 +168,7 @@ function addDays(date: Date, days: number): Date {
  * RECENT_DAYS_AVOIDED is 2, so that's how far back this looks.
  */
 async function loadPreviousWeekSeed(
-  roadmapId: string,
+  clientId: string,
   weekNumber: number
 ): Promise<{
   dayIndexOffset: number
@@ -176,11 +178,17 @@ async function loadPreviousWeekSeed(
   if (weekNumber <= 1) return { dayIndexOffset: 0 }
   const dayIndexOffset = (weekNumber - 1) * 7
 
-  const [previousPlan] = await db
-    .select()
-    .from(dietPlans)
-    .where(and(eq(dietPlans.roadmapId, roadmapId), eq(dietPlans.weekNumber, weekNumber - 1)))
-    .limit(1)
+  // The previous week's CURRENT plan (approved, else newest) — the same one
+  // the client page shows. This used to take whichever row the database
+  // returned first, which with several saved versions of a week could be
+  // any of them. Looked up by client, not roadmap: a recomputed roadmap does
+  // not restart the programme.
+  const previousPlan = pickCurrentPlan(
+    await db
+      .select()
+      .from(dietPlans)
+      .where(and(eq(dietPlans.clientId, clientId), eq(dietPlans.weekNumber, weekNumber - 1)))
+  )
   if (!previousPlan) return { dayIndexOffset }
 
   const [lastDay] = await db
@@ -250,17 +258,19 @@ async function loadPreviousWeekSeed(
  * analog — see CLAUDE.md "The recipe engine").
  */
 async function loadPreviousWeekRecipeSeed(
-  roadmapId: string,
+  clientId: string,
   weekNumber: number
 ): Promise<{ dayIndexOffset: number; previousWeekLastDayRecipeNames?: Record<string, string[]> }> {
   if (weekNumber <= 1) return { dayIndexOffset: 0 }
   const dayIndexOffset = (weekNumber - 1) * 7
 
-  const [previousPlan] = await db
-    .select()
-    .from(dietPlans)
-    .where(and(eq(dietPlans.roadmapId, roadmapId), eq(dietPlans.weekNumber, weekNumber - 1), eq(dietPlans.engine, "recipe")))
-    .limit(1)
+  // The previous week's current plan, as in loadPreviousWeekSeed() above.
+  const previousPlan = pickCurrentPlan(
+    await db
+      .select()
+      .from(dietPlans)
+      .where(and(eq(dietPlans.clientId, clientId), eq(dietPlans.weekNumber, weekNumber - 1), eq(dietPlans.engine, "recipe")))
+  )
   if (!previousPlan) return { dayIndexOffset }
 
   const [lastDay] = await db
@@ -413,7 +423,7 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
       )
     )
 
-  const { dayIndexOffset, previousWeekLastDayRecipeNames } = await loadPreviousWeekRecipeSeed(ctx.roadmapId, ctx.weekNumber)
+  const { dayIndexOffset, previousWeekLastDayRecipeNames } = await loadPreviousWeekRecipeSeed(ctx.clientId, ctx.weekNumber)
 
   lap("dbReads")
 
@@ -738,6 +748,19 @@ export async function POST(request: Request) {
   }
   const { session, client } = sessionRow
 
+  // Week 1 is built from counselling; every later week needs its follow-up
+  // check-in submitted first. Checked here, not only in the UI, so no caller
+  // can skip it. See src/lib/followup/client-weeks.ts.
+  const [checkinRow] = await db
+    .select({ status: weeklyCheckins.status })
+    .from(weeklyCheckins)
+    .where(and(eq(weeklyCheckins.clientId, client.id), eq(weeklyCheckins.weekNumber, weekNumber)))
+    .limit(1)
+  const checkinError = checkinGateError(weekNumber, checkinRow?.status ?? null)
+  if (checkinError) {
+    return NextResponse.json({ error: checkinError, needsCheckin: true }, { status: 422 })
+  }
+
   // Moved ahead of eligible-foods (was previously computed just before the
   // DB transaction, much further down) so the seasonal filter can derive
   // from the real week_start instead of "now" — the week a plan covers can
@@ -1038,7 +1061,7 @@ export async function POST(request: Request) {
   // dayIndexOffset/recentArchetypeIdsBySlot — otherwise unchanged from
   // before this layer existed, still a single self-contained read.
   const { dayIndexOffset, previousWeekLastDay, recentArchetypeIdsBySlot } = await loadPreviousWeekSeed(
-    roadmapId,
+    client.id,
     weekNumber
   )
 

@@ -188,6 +188,8 @@ export async function saveWeekTargetOverride(input: WeekTargetInput) {
     })
 
   revalidatePath(`/sessions/${parsed.sessionId}/review`)
+  // The same editor sits on the weekly check-in page.
+  revalidatePath("/clients", "layout")
 }
 
 /** Back to the roadmap's computed target for that week. */
@@ -202,4 +204,5 @@ export async function clearWeekTargetOverride(roadmapId: string, sessionId: stri
       )
     )
   revalidatePath(`/sessions/${z.string().uuid().parse(sessionId)}/review`)
+  revalidatePath("/clients", "layout")
 }

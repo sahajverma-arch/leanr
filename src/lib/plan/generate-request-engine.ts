@@ -7,7 +7,7 @@ export class ExchangeEngineDisabledError extends Error {
 }
 
 import { REGIONS } from "@/lib/foods/vocab"
-import { cuisineForTemplateRegion } from "@/lib/foods/recipe-cuisine-mapping"
+import { cuisineForTemplateRegion, RECIPE_CUISINES } from "@/lib/foods/recipe-cuisine-mapping"
 
 /**
  * Decides which engine an incoming /api/plan/generate body asks for.
@@ -49,6 +49,13 @@ export function applyEngineDefault(body: unknown, recipeEngineEnabled: boolean):
   // The UI only sends `region`; the recipe engine speaks in cuisines.
   // Anything unrecognised falls back to "General", which is always eligible,
   // so a region can never resolve to an empty recipe pool.
+  //
+  // A recipe plan stores its CUISINE in diet_plans.region, and "generate the
+  // next week" sends that column straight back as `region`. So a cuisine
+  // string arriving here is taken as-is — without this, a Gujarati client's
+  // week 2 quietly became a "General" week.
+  const cuisine = RECIPE_CUISINES.find((c) => c === raw.region)
+  if (cuisine) return { ...raw, engine: "recipe", cuisine }
   const region = REGIONS.find((r) => r === raw.region)
   return {
     ...raw,
