@@ -63,12 +63,18 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
       {dietViolations.length > 0 && (
         <div className="rounded-xl border-2 border-red-600 bg-red-50 p-4 text-red-950">
           <h2 className="text-sm font-semibold uppercase tracking-wide">
-            Not {plan.dietType.replace("_", "-")} — do not send this plan
+            Contains food this client must not have — do not send this plan
           </h2>
+          <ul className="mt-2 space-y-1 text-sm">
+            {dietViolations.map((v) => (
+              <li key={v}>
+                • <strong>{v}</strong>
+              </li>
+            ))}
+          </ul>
           <p className="mt-2 text-sm">
-            This plan contains {dietViolations.length === 1 ? "a dish" : "dishes"} the client must not eat:{" "}
-            <strong>{dietViolations.join(", ")}</strong>. Regenerate the plan, or swap each one out. It cannot be
-            approved until they are gone.
+            Checked against the client&apos;s current counselling answers (diet type, allergies and dislikes). Swap each
+            one out or regenerate the plan. It cannot be approved until they are gone.
           </p>
         </div>
       )}
@@ -321,6 +327,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
         weekNumber={plan.weekNumber}
         status={plan.status}
         withinTolerance={withinTolerance}
+        hasForbiddenFood={dietViolations.length > 0}
       />
 
       {/* Footer */}

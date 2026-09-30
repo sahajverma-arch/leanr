@@ -1477,22 +1477,46 @@ soy *allergy* would have leaked too: the CSV's Allergen column never tags soy or
 dishes.
 
 **The rule now** (`recipe-food-avoidance.ts`, same idea as `recipe-animal-content.ts`):
-- **Allergy** (q27 "Allergy — never serve"): a dish is refused if its stored tags OR its name show the
-  allergen. Soy, Sesame and Spicy food are now mapped. At ingestion `seed-recipes.ts` also adds
-  `soy`/`sesame` from the ingredient list, which catches soy sauce and til tempering. That adds 31 soy
-  and 41 sesame dishes, and it takes effect only after `npm run seed:recipes`.
-- **Avoid terms** (q36 dislikes, plus the q27c name of an "Other" food marked Allergy): matched
-  whole-word against the dish **name only**. The matcher knows common synonym families (soya → soya,
-  soybean, nutri, tofu...; lauki → bottle gourd, doodhi...; baingan → brinjal, eggplant...). Anything
-  else matches literally, singular or plural. "Soya" includes tofu. "Tofu" alone excludes only tofu.
+- **Allergy**: a dish is refused if its stored tags OR its name show the allergen. Soy, Sesame and
+  Spicy food are mapped. At ingestion `seed-recipes.ts` also adds `soy`/`sesame` from the ingredient
+  list, which catches soy sauce and til tempering (31 soy, 41 sesame dishes). Options with no tag on
+  any recipe (Rajma or beans, Chickpeas, Dal) are matched by name. So is the typed name of an "Other"
+  food (q27c).
+- **A q27 food with its "which is it?" follow-up unanswered counts as never-serve**
+  (`isNeverServe()`). Only an explicit "Intolerance" is still served. Real sessions had Peanut listed
+  with no classification, and the old code ignored it: an **approved** plan served that client
+  peanuts twice. This also makes an unclassified "Protein powder" block a supplement prescription.
+- **Avoid terms** (q36 dislikes, and the q27 names above): matched whole-word against the dish
+  **name only**, with synonym families (lauki → bottle gourd, doodhi...; baingan → brinjal...).
+  - **A family applies only when the client names the FOOD** ("paneer", "lauki ki sabzi", "soya
+    chunks"). A specific DISH matches that dish only. A real client's "paneer bhurji" had been
+    removing every paneer dish from a protein-short vegetarian.
+  - **"Soya chunks" means chunks** (nutri, nutrela, "Soya X" dishes), **not tofu, edamame or
+    soybean.** That client's counsellor wrote "Soya chunks. Tofu and edamame is fine". Plain "soya"
+    still means all soy.
+  - **A sentence that permits a food is dropped whole** ("X is fine", "can have X", "no problem").
+  - Plurals try both singular guesses: "porridges" → porridge, "tomatoes" → tomato.
 - **Intolerance is still not a filter.** q27's own note says a trigger food is "reduced, timed
   differently or retested smaller". That is the dietitian's call.
 
-`recipeAvoidanceConflict()` is the one check used by the generation pool, the plausibility re-check,
-the swap/add picker and its server-side write gate, so they cannot disagree. Answers are read live, so
-a correction applies to the next generation or edit. On the real client, "Soya chunks" removes 39 of
-1074 vegetarian dishes, all of them soya or tofu. **Do not go back to `r.allergenTags.some(...)`** at
-any call site: the stored tag alone misses soy.
+**Enforced everywhere, through one rule** (`client-food-rules.ts`: diet + allergies + dislikes, all
+read LIVE from the answers):
+1. **Generation**: the pool is filtered, and a hard gate before the write rejects a week with an
+   allergen or dislike (a 422, like the diet gate).
+2. **Swap / add / fixed menu**: the picker hides the dish, and the server re-checks it on the write.
+   The diet check uses BOTH the plan's diet type and the client's current answer, so a plan made as
+   non-veg for a client later corrected to vegetarian cannot keep accepting chicken.
+3. **Plan page**: a red "must not have — do not send" banner lists each dish with its reason. Approve
+   is disabled.
+4. **Approval**: refused on the same rule, for both engines.
+5. **Old exchange-engine plans**: `eligible-foods.ts` now uses the same name matching for dislikes,
+   not only an exact name.
+
+Ingredient edits cannot add an ingredient, only change or remove one the dish already has.
+
+**Audit**: `npx tsx --env-file=.env.local scripts/audit-plan-client-rules.ts` checks every saved plan
+(read-only). On 2026-09-30 it found 8 of 62 plans, including one APPROVED (the peanut case). **Do not
+go back to `r.allergenTags.some(...)`** at any call site: the stored tag alone misses soy.
 
 ### Recipe pool filter — nutritionally-empty rows
 

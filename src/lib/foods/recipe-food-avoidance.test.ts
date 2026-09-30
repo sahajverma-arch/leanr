@@ -20,24 +20,31 @@ import { loadIngredientTextByRecipe } from "./recipe-ingredient-text"
 const dish = (name: string, allergenTags: string[] = []) => ({ name, allergenTags })
 const avoids = (raw: string, name: string) => recipeAvoidanceConflict(dish(name), [], compileAvoidTerms([raw])) !== null
 
-describe("the real case (2026-09-30): q36 = 'Soya chunks ', vegetarian", () => {
-  // Every soya dish this client was actually served, with the tags they
-  // really carry — none of which says soy.
-  const served = [
-    dish("Soya Matar Sabzi Dry", ["onion_garlic"]),
-    dish("Tofu Bhurji", ["lactose", "onion_garlic"]),
-    dish("Tofu Shirataki Rice Pulao", ["onion_garlic", "lactose"]),
-    dish("Tofu Do Pyaza", ["onion_garlic"]),
-  ]
+describe("the real case (2026-09-30): Dr Sudha — q36 'Soya chunks', q27c 'Soya chunks. Tofu and edamame is fine'", () => {
   const terms = compileAvoidTerms(["Soya chunks "])
 
-  it.each(served)("keeps $name off the plate", (r) => {
-    expect(recipeAvoidanceConflict(r, [], terms)).toMatch(/Soya chunks/)
+  it("keeps soya chunk dishes off the plate — the dish she was actually served, twice", () => {
+    for (const name of ["Soya Matar Sabzi Dry", "Nutri Pulav", "Nutri Soya Tikki", "Soya Momos", "Chilli Soya", "Nutri Keema Pav"]) {
+      expect(avoids("Soya chunks", name), name).toBe(true)
+    }
+    expect(recipeAvoidanceConflict(dish("Soya Matar Sabzi Dry", ["onion_garlic"]), [], terms)).toMatch(/Soya chunks/)
   })
 
-  it("catches soya by any of its names", () => {
-    for (const name of ["Nutri Pulav", "Nutri Soya Tikki", "Soybean Salad", "Soya Momos", "Soybean Dal Chaat"]) {
-      expect(avoids("Soya chunks", name), name).toBe(true)
+  it("does NOT take away tofu, edamame or soybean — her counsellor wrote that tofu and edamame are fine", () => {
+    for (const name of ["Tofu Bhurji", "Tofu Do Pyaza", "Edamame Salad", "Soybean Salad", "Soya Milk Smoothie"]) {
+      expect(avoids("Soya chunks", name), name).toBe(false)
+    }
+  })
+
+  it("a sentence that permits a food is never read as a dislike", () => {
+    const both = compileAvoidTerms(["Soya chunks. Tofu and edamame is fine "])
+    expect(both.map((t) => t.term)).toEqual(["Soya chunks"])
+    expect(recipeAvoidanceConflict(dish("Tofu Bhurji"), [], both)).toBeNull()
+  })
+
+  it("plain 'soya' still means all soya, tofu included", () => {
+    for (const name of ["Tofu Bhurji", "Soybean Salad", "Soya Matar Sabzi Dry", "Nutri Pulav"]) {
+      expect(avoids("soya", name), name).toBe(true)
     }
   })
 
@@ -70,6 +77,23 @@ describe("compileAvoidTerms", () => {
     expect(avoids("paneer", "Cottage Cheese Salad")).toBe(true)
   })
 
+  it("a specific DISH excludes that dish only, not the whole food (real client, 2026-09-30)", () => {
+    // "porridges, khichdi, paneer bhurji " — the client's real answer.
+    const terms = compileAvoidTerms(["porridges, khichdi, paneer bhurji "])
+    const hit = (name: string) => recipeAvoidanceConflict(dish(name), [], terms) !== null
+    expect(hit("Paneer Bhurji")).toBe(true)
+    expect(hit("Paneer Curry")).toBe(false)
+    expect(hit("Shahi Paneer (Zero Oil)")).toBe(false)
+    expect(hit("Moong Dal Khichdi")).toBe(true)
+    expect(hit("Banana Oats Porridge")).toBe(true)
+  })
+
+  it("naming the food itself, in any form, still excludes the whole food", () => {
+    expect(avoids("lauki ki sabzi", "Bottle Gourd Raita")).toBe(true)
+    expect(avoids("Soya chunks", "Soya Matar Sabzi Dry")).toBe(true)
+    expect(avoids("paneer", "Shahi Paneer (Zero Oil)")).toBe(true)
+  })
+
   it("tofu alone excludes tofu, not all soya", () => {
     expect(avoids("tofu", "Tofu Bhurji")).toBe(true)
     expect(avoids("tofu", "Soya Matar Sabzi Dry")).toBe(false)
@@ -94,7 +118,7 @@ describe("soy and sesame allergies", () => {
   })
 
   it("an intolerance is not a hard exclusion", () => {
-    const answers = { q27: ["Soy"], q27_soy_type: "Intolerance" } as unknown as Answers
+    const answers = { q27: ["Soy"], q27_soy_type: "Intolerance — causes symptoms" } as unknown as Answers
     expect(clientRecipeAllergenTagsFromAnswers(answers)).toEqual([])
   })
 
@@ -110,6 +134,21 @@ describe("soy and sesame allergies", () => {
   })
 })
 
+describe("an allergy listed but never classified is treated as never-serve (real sessions)", () => {
+  it("Peanut listed with no allergy/intolerance answer still excludes peanut dishes", () => {
+    const answers = { q27: ["Peanut"] } as unknown as Answers
+    expect(clientRecipeAllergenTagsFromAnswers(answers)).toEqual(["peanuts"])
+  })
+
+  it("Rajma/Dal/Chickpeas, which carry no recipe tag, are matched by name", () => {
+    const answers = { q27: ["Rajma or beans", "Other"], q27c: "toor dal, rajma" } as unknown as Answers
+    const terms = compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(answers))
+    expect(recipeAvoidanceConflict(dish("Rajma Curry"), [], terms)).not.toBeNull()
+    expect(recipeAvoidanceConflict(dish("Toor Dal Tadka"), [], terms)).not.toBeNull()
+    expect(recipeAvoidanceConflict(dish("Moong Dal Chilla"), [], terms)).toBeNull()
+  })
+})
+
 describe("clientRecipeAvoidTermsFromAnswers", () => {
   it("takes q36 and the name of an 'Other' allergy", () => {
     const answers = { q36: "Soya chunks", q27: ["Other"], q27_other_type: "Allergy — never serve", q27c: "Mushroom" } as unknown as Answers
@@ -117,7 +156,7 @@ describe("clientRecipeAvoidTermsFromAnswers", () => {
   })
 
   it("ignores an 'Other' food that is only an intolerance", () => {
-    const answers = { q27: ["Other"], q27_other_type: "Intolerance", q27c: "Mushroom" } as unknown as Answers
+    const answers = { q27: ["Other"], q27_other_type: "Intolerance — causes symptoms", q27c: "Mushroom" } as unknown as Answers
     expect(clientRecipeAvoidTermsFromAnswers(answers)).toEqual([])
   })
 })

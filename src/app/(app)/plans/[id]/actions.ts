@@ -8,8 +8,8 @@ import { db } from "@/db"
 import { counsellingSessions, dietPlanDays, dietPlanItems, dietPlanMeals, dietPlanRecipeItems, dietPlans, foods, recipes, roadmaps } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
-import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { clientAllergensFromAnswers, clientDislikesFromAnswers } from "@/lib/plan/client-profile-from-answers"
+import { clientFoodRules, foodRuleViolation, recipeRuleViolation } from "@/lib/plan/client-food-rules"
 import { filterEligibleFoods, type EligibilityCriteria } from "@/lib/plan/eligible-foods"
 import {
   assertEditable,
@@ -167,11 +167,20 @@ export async function approvePlan(planId: string): Promise<void> {
     )
   }
 
-  // Never approve a plan carrying a dish the client's diet forbids — this
-  // also catches plans generated BEFORE the diet evidence check existed
-  // (recipe-animal-content.ts), which a regeneration would have rejected.
-  // Read against the LIVE recipe row, since the stored label may have been
-  // corrected since generation.
+  // Never approve a plan carrying a dish this client must not have: the wrong
+  // diet type (by the dish's own evidence), a declared allergen, or a dislike.
+  // Read against the LIVE recipe/food rows and the LIVE counselling answers,
+  // so this also catches a plan generated before a check existed, or before
+  // the client's answers were corrected. Same rule as the plan page's red
+  // banner (client-food-rules.ts), so the two cannot disagree.
+  const [sessionRow] = await db
+    .select({ answers: counsellingSessions.answers })
+    .from(roadmaps)
+    .innerJoin(counsellingSessions, eq(roadmaps.sessionId, counsellingSessions.id))
+    .where(eq(roadmaps.id, plan.roadmapId))
+    .limit(1)
+  const rules = clientFoodRules((sessionRow?.answers ?? {}) as Answers, plan.dietType)
+  const forbidden = new Set<string>()
   if (plan.engine === "recipe") {
     const items = await db
       .select({ name: recipes.name, dietTypes: recipes.dietTypes, allergenTags: recipes.allergenTags })
@@ -180,12 +189,27 @@ export async function approvePlan(planId: string): Promise<void> {
       .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
       .innerJoin(recipes, eq(dietPlanRecipeItems.recipeId, recipes.id))
       .where(eq(dietPlanDays.dietPlanId, planId))
-    const forbidden = [...new Set(items.filter((r) => !isRecipeAllowedForDiet(r, plan.dietType)).map((r) => r.name))]
-    if (forbidden.length > 0) {
-      throw new Error(
-        `This plan contains dishes that are not ${plan.dietType}: ${forbidden.join(", ")}. Swap them out or regenerate the plan before approving.`
-      )
+    for (const r of items) {
+      const v = recipeRuleViolation(r, rules)
+      if (v) forbidden.add(`${r.name} (${v})`)
     }
+  } else {
+    const items = await db
+      .select({ nameEn: foods.nameEn, dietTypes: foods.dietTypes, allergens: foods.allergens })
+      .from(dietPlanItems)
+      .innerJoin(dietPlanMeals, eq(dietPlanItems.dietPlanMealId, dietPlanMeals.id))
+      .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
+      .innerJoin(foods, eq(dietPlanItems.foodId, foods.id))
+      .where(eq(dietPlanDays.dietPlanId, planId))
+    for (const f of items) {
+      const v = foodRuleViolation(f, rules)
+      if (v) forbidden.add(`${f.nameEn} (${v})`)
+    }
+  }
+  if (forbidden.size > 0) {
+    throw new Error(
+      `This plan contains food this client must not have: ${[...forbidden].join("; ")}. Swap them out or regenerate the plan before approving.`
+    )
   }
 
   await db.update(dietPlans).set({ status: "approved" }).where(eq(dietPlans.id, planId))

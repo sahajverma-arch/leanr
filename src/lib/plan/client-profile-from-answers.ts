@@ -89,7 +89,32 @@ export function dietTypeFromAnswers(answers: Answers): DietType {
   return mapped
 }
 
-/** Only "Allergy — never serve" classifications hard-exclude; "Intolerance" is a softer signal handled elsewhere, not a food filter. */
+/**
+ * Whether a food the client listed in q27 must never be served.
+ *
+ * "Allergy — never serve" obviously must not. So must a food whose "which is
+ * it?" follow-up was never answered: q27's own note says the classification
+ * decides between "never appears in any meal" and "reduced, timed differently",
+ * and an unanswered one has not been cleared as the milder case. Real sessions
+ * have this (a listed Peanut with no classification), and before 2026-09-30
+ * it silently excluded nothing. Only an explicit "Intolerance" is served.
+ */
+function isNeverServe(answers: Answers, slug: string): boolean {
+  const type = answers[`q27_${slug}_type`]
+  return !(typeof type === "string" && type.startsWith("Intolerance"))
+}
+
+/**
+ * q27 options with no allergen tag on any recipe, matched on the dish name
+ * instead (recipe-food-avoidance.ts). "Dal" is deliberately broad: a client
+ * who cannot eat dal must not be handed one under any name the dish uses.
+ */
+const ALLERGEN_LABEL_TO_AVOID_TERMS: Record<string, string[]> = {
+  "Rajma or beans": ["rajma"],
+  Chickpeas: ["chickpeas"],
+  Dal: ["dal"],
+}
+
 /**
  * Whether this client can be prescribed a protein supplement at all.
  *
@@ -110,7 +135,7 @@ export function proteinPowderRestriction(answers: Answers): ProteinPowderRestric
   const reported = answers.q27
   const listed = Array.isArray(reported) && reported.some((l) => l === "Protein powder")
   if (!listed) return null
-  return answers.q27_protein_powder_type === "Allergy — never serve" ? "allergy" : "intolerance"
+  return isNeverServe(answers, "protein_powder") ? "allergy" : "intolerance"
 }
 
 export function clientAllergensFromAnswers(answers: Answers): string[] {
@@ -121,7 +146,7 @@ export function clientAllergensFromAnswers(answers: Answers): string[] {
   for (const label of labels) {
     const slug = ALLERGEN_LABEL_TO_SLUG[label]
     if (!slug) continue
-    if (answers[`q27_${slug}_type`] !== "Allergy — never serve") continue
+    if (!isNeverServe(answers, slug)) continue
     const mappedVocab = ALLERGEN_SLUG_TO_VOCAB[slug]
     if (mappedVocab) vocab.add(mappedVocab)
   }
@@ -148,7 +173,7 @@ export function clientRecipeAllergenTagsFromAnswers(answers: Answers): string[] 
   for (const label of labels) {
     const slug = ALLERGEN_LABEL_TO_SLUG[label]
     if (!slug) continue
-    if (answers[`q27_${slug}_type`] !== "Allergy — never serve") continue
+    if (!isNeverServe(answers, slug)) continue
     const mappedTags = CLIENT_ALLERGEN_LABEL_TO_RECIPE_TAGS[label]
     if (mappedTags) mappedTags.forEach((t) => tags.add(t))
   }
@@ -158,18 +183,22 @@ export function clientRecipeAllergenTagsFromAnswers(answers: Answers): string[] 
 
 /**
  * Free-text foods the recipe engine must keep off this client's plate, matched
- * against dish names by recipe-food-avoidance.ts: every q36 dislike, plus the
- * name of an "Other" food (q27c) classified "Allergy — never serve", which
- * has no fixed tag to map to. Read live from the answers, like the allergen
+ * against dish names by recipe-food-avoidance.ts: every q36 dislike, plus
+ * each never-serve q27 food with no recipe tag (Rajma or beans, Chickpeas,
+ * Dal) and the typed name of a never-serve "Other" food (q27c). "Never serve"
+ * includes an unclassified one — see isNeverServe. Read live from the answers, like the allergen
  * tags, so a correction takes effect on the next generation or edit.
  */
 export function clientRecipeAvoidTermsFromAnswers(answers: Answers): string[] {
   const terms: string[] = []
   if (typeof answers.q36 === "string" && answers.q36.trim() !== "") terms.push(answers.q36)
-  const reported = answers.q27
-  const otherIsAllergy =
-    Array.isArray(reported) && reported.includes("Other") && answers.q27_other_type === "Allergy — never serve"
-  if (otherIsAllergy && typeof answers.q27c === "string" && answers.q27c.trim() !== "") terms.push(answers.q27c)
+  const reported = Array.isArray(answers.q27) ? answers.q27.filter((l): l is string => typeof l === "string") : []
+  for (const label of reported) {
+    const slug = ALLERGEN_LABEL_TO_SLUG[label]
+    if (!slug || !isNeverServe(answers, slug)) continue
+    terms.push(...(ALLERGEN_LABEL_TO_AVOID_TERMS[label] ?? []))
+    if (label === "Other" && typeof answers.q27c === "string" && answers.q27c.trim() !== "") terms.push(answers.q27c)
+  }
   return terms
 }
 

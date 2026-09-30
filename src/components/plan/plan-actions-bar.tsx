@@ -15,12 +15,15 @@ export function PlanActionsBar({
   weekNumber,
   status,
   withinTolerance,
+  hasForbiddenFood = false,
 }: {
   planId: string
   clientId: string
   weekNumber: number
   status: "draft" | "approved"
   withinTolerance: boolean
+  /** The red "must not have" banner is showing; approval is refused server-side too. */
+  hasForbiddenFood?: boolean
 }) {
   const [isPending, startTransition] = useTransition()
 
@@ -40,7 +43,11 @@ export function PlanActionsBar({
       {status === "approved" ? (
         <Badge>Approved</Badge>
       ) : (
-        <Button onClick={handleApprove} disabled={isPending || !withinTolerance}>
+        <Button
+          onClick={handleApprove}
+          disabled={isPending || !withinTolerance || hasForbiddenFood}
+          title={hasForbiddenFood ? "Remove the food this client must not have (red banner at the top) first." : undefined}
+        >
           {isPending ? "Approving…" : "Mark approved"}
         </Button>
       )}

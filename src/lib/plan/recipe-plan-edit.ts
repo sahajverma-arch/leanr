@@ -34,13 +34,12 @@ import {
 import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
-import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { applyWeekTargetOverride, type WeekTargetOverride } from "@/lib/counselling/week-target-override"
 import { eligibleCuisinesFor, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import { recipeSeasonMatches } from "@/lib/foods/recipe-season-mapping"
 import type { Season } from "@/lib/foods/vocab"
-import { clientRecipeAllergenTagsFromAnswers, clientRecipeAvoidTermsFromAnswers } from "@/lib/plan/client-profile-from-answers"
-import { compileAvoidTerms, recipeAvoidanceConflict, type CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
+import { clientFoodRules, recipeRuleViolation, type ClientFoodRules } from "@/lib/plan/client-food-rules"
+import type { CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { deviationOf, rebalanceDay, weeklyAverageOf, type StoredRecipeMeal } from "./recipe-swap"
 import { RECIPE_PIPELINE_COLUMNS, type DailyRecipeTarget, type RecipeForPipeline } from "./recipe-types"
@@ -79,6 +78,8 @@ export interface RecipePlanContext {
   allergenTags: string[]
   /** q36 dislikes / "Other" allergy names, compiled. Live from the answers, for the same reason. */
   avoidTerms: CompiledAvoidTerm[]
+  /** Diet (plan's AND live), allergies, dislikes — the one check every edit applies. See client-food-rules.ts. */
+  rules: ClientFoodRules
   season: Season
   constraints: ClientRecipeConstraints
 }
@@ -103,8 +104,9 @@ async function contextForPlan(plan: typeof dietPlans.$inferSelect): Promise<Reci
     (plan.targetOverride as WeekTargetOverride | null) ?? null
   )
   const { food } = foodTargetsAfterSupplement(wt, (plan.supplement as PrescribedSupplement | null) ?? null)
-  const allergenTags = clientRecipeAllergenTagsFromAnswers(answers)
-  const avoidTerms = compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(answers))
+  const rules = clientFoodRules(answers, plan.dietType)
+  const allergenTags = rules.recipeAllergenTags
+  const avoidTerms = rules.avoidTerms
 
   return {
     planId: plan.id,
@@ -114,6 +116,7 @@ async function contextForPlan(plan: typeof dietPlans.$inferSelect): Promise<Reci
     target: { kcal: food.kcal, proteinG: food.proteinG, carbsG: food.carbsG, fatG: food.fatG, fiberG: food.fibreG },
     allergenTags,
     avoidTerms,
+    rules,
     season: seasonFor(plan.weekStart, cuisine),
     constraints: { dietType: plan.dietType, eligibleCuisines: eligibleCuisinesFor(cuisine), allergenTags, avoidTerms },
   }
@@ -172,21 +175,19 @@ export async function eligibleRecipesForPlan(ctx: RecipePlanContext): Promise<Re
 
   return rows.filter(
     (r) =>
-      isRecipeAllowedForDiet(r, ctx.dietType) &&
+      recipeRuleViolation(r, ctx.rules) === null &&
       recipeSeasonMatches(r.season, ctx.season) &&
-      recipeAvoidanceConflict(r, ctx.allergenTags, ctx.avoidTerms) === null &&
       r.kcalPer100G > 0
   )
 }
 
 /** The same checks eligibleRecipesForPlan applies, as a hard gate on one chosen recipe. Message names the real reason. */
 export function assertRecipeAllowed(recipe: RecipeForPipeline, ctx: RecipePlanContext): void {
-  if (!isRecipeAllowedForDiet(recipe, ctx.dietType)) {
-    throw new PlanEditError(`${recipe.name} is not suitable for a ${ctx.dietType} client.`)
-  }
-  const avoidance = recipeAvoidanceConflict(recipe, ctx.allergenTags, ctx.avoidTerms)
-  if (avoidance) {
-    throw new PlanEditError(`${recipe.name} ${avoidance}.`)
+  // Diet (the plan's AND the client's current answer), allergies and
+  // dislikes. Re-checked here, never trusted from what the picker showed.
+  const violation = recipeRuleViolation(recipe, ctx.rules)
+  if (violation) {
+    throw new PlanEditError(`${recipe.name} cannot be added: ${violation}.`)
   }
   // Must use the SAME rule the picker used. Checking `recipe.season !== ctx.season`
   // here would reject exactly the dishes the monsoon relaxation just made

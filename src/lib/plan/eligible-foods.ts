@@ -4,6 +4,7 @@
  */
 
 import type { Food } from "@/db/schema"
+import { compileAvoidTerms } from "@/lib/foods/recipe-food-avoidance"
 import type { Season } from "@/lib/foods/vocab"
 import type { ExchangeCode } from "./table-4-1"
 
@@ -52,6 +53,9 @@ interface FilterStep {
 
 function buildSteps(criteria: EligibilityCriteria): FilterStep[] {
   const dislikesLower = new Set(criteria.clientDislikes.map((d) => d.toLowerCase()))
+  // An exact name match alone missed "Soya chunks" vs "Soya Matar Sabzi" —
+  // the same whole-word + synonym matching the recipe engine uses.
+  const avoidTerms = compileAvoidTerms(criteria.clientDislikes)
   const excludedMedicalTags = new Set((criteria.medicalTags ?? []).flatMap((tag) => MEDICAL_EXCLUDE_TAGS[tag] ?? []))
 
   return [
@@ -62,7 +66,10 @@ function buildSteps(criteria: EligibilityCriteria): FilterStep[] {
       name: "allergens",
       keep: (f) => !f.allergens.some((a) => criteria.clientAllergens.includes(a)),
     },
-    { name: "dislikes", keep: (f) => !dislikesLower.has(f.nameEn.toLowerCase()) },
+    {
+      name: "dislikes",
+      keep: (f) => !dislikesLower.has(f.nameEn.toLowerCase()) && !avoidTerms.some(({ re }) => re.test(f.nameEn)),
+    },
     {
       name: "medical_tags",
       keep: (f) => excludedMedicalTags.size === 0 || !f.tags.some((t) => excludedMedicalTags.has(t)),

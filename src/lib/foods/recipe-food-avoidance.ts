@@ -79,8 +79,18 @@ export function effectiveRecipeAllergenTags(recipe: { name: string; allergenTags
  * not be handed a tofu bhurji. The reverse is not true — "tofu" alone
  * excludes only tofu.
  */
-const FOOD_FAMILIES: { triggers: RegExp; nameWords: string[] }[] = [
-  { triggers: wordPattern(["soy", "soya", "soyabeans?", "soybeans?", "nutri", "nutrela"]), nameWords: SOY_WORDS },
+const FOOD_FAMILIES: { triggers: RegExp; nameWords: string[]; exclusive?: boolean }[] = [
+  // Soya CHUNKS (nutri/nutrela and the dishes made from them) are a different
+  // food from tofu or edamame, and a real client's counsellor wrote exactly
+  // that: "Soya chunks. Tofu and edamame is fine". In an Indian dish name a
+  // bare "Soya" means chunks or granules unless it says bean, milk or sauce.
+  // `exclusive` stops the broader soy family below from also applying.
+  {
+    triggers: wordPattern(["soya? chunks?", "soya? granules?", "soya? badi", "soya? keema", "nutri", "nutrela", "meal maker"]),
+    nameWords: ["soya(?!\\s*(?:beans?|milk|sauce|dal))", "soy chunks?", "nutri", "nutrela", "meal maker"],
+    exclusive: true,
+  },
+  { triggers: wordPattern(["soy", "soya", "soyabeans?", "soybeans?"]), nameWords: SOY_WORDS },
   { triggers: wordPattern(["tofu"]), nameWords: ["tofu"] },
   { triggers: wordPattern(["paneer", "cottage cheese"]), nameWords: ["paneer", "cottage cheese"] },
   { triggers: wordPattern(["mushrooms?", "khumb"]), nameWords: ["mushrooms?", "khumb"] },
@@ -130,13 +140,20 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
+// A sentence that GRANTS something is not a dislike: "Tofu and edamame is
+// fine" must never exclude tofu. The whole sentence is dropped.
+const PERMISSION = /\b(is|are)\s+(fine|ok|okay|allowed)\b|\b(can|may)\s+(have|eat)\b|\bno\s+problem\b|\bis\s+not\s+a\s+problem\b/i
+
 /**
  * Splits raw free-text answers into individual food terms. "Soya chunks and
- * paneer / lauki" is three terms.
+ * paneer / lauki" is three terms. Split into sentences first, so a sentence
+ * that permits a food ("Tofu and edamame is fine") can be dropped whole.
  */
 export function splitAvoidTerms(raw: readonly string[]): string[] {
   return raw
-    .flatMap((r) => r.split(/[,;\n/&]|\band\b|\bor\b/i))
+    .flatMap((r) => r.split(/[.;\n]/))
+    .filter((sentence) => !PERMISSION.test(sentence))
+    .flatMap((r) => r.split(/[,/&]|\band\b|\bor\b/i))
     .map((s) => s.replace(/\(.*?\)/g, " ").replace(FILLER, " ").replace(/[^\p{L}\p{N}' -]/gu, " ").replace(/\s+/g, " ").trim())
     .filter((s) => s.length >= 3 && !NON_ANSWERS.has(s.toLowerCase()))
 }
@@ -147,19 +164,41 @@ export interface CompiledAvoidTerm {
   re: RegExp
 }
 
+// Words that describe a FORM of a food rather than a different dish, so
+// "soya chunks" or "lauki ki sabzi" still means the whole food. Anything else
+// left over ("bhurji" in "paneer bhurji") names one specific dish.
+const FORM_WORDS = /\b(chunks?|granules?|nuggets?|badi|bari|sabzi|sabji|subzi|subji|bhaji|curry|ki|ka|ke|wali|wala|raw|boiled|cooked|in any form)\b/gi
+
 /**
  * Compile once per request, not once per recipe: a pool is ~1000 rows.
- * A term matching a known family takes the family's full name vocabulary;
- * any other term matches itself, whole-word, singular or plural.
+ *
+ * A term that names a FOOD ("soya", "soya chunks", "lauki ki sabzi") takes
+ * that food's whole family of names. A term that names one DISH ("paneer
+ * bhurji") matches that dish only — a client who dislikes paneer bhurji has
+ * not said anything about paneer curry, and for a vegetarian, dropping every
+ * paneer dish would cost real protein. (A real client's "paneer bhurji" was
+ * over-matched this way before 2026-09-30.) Anything else matches itself,
+ * whole-word, singular or plural.
  */
 export function compileAvoidTerms(raw: readonly string[]): CompiledAvoidTerm[] {
   return splitAvoidTerms(raw).map((term) => {
     const words = new Set<string>()
-    for (const family of FOOD_FAMILIES) if (family.triggers.test(term)) family.nameWords.forEach((w) => words.add(w))
+    for (const family of FOOD_FAMILIES) {
+      if (!family.triggers.test(term)) continue
+      const remainder = term
+        .replace(new RegExp(family.triggers.source, "gi"), " ")
+        .replace(FORM_WORDS, " ")
+        .trim()
+      if (remainder !== "") continue
+      family.nameWords.forEach((w) => words.add(w))
+      if (family.exclusive) break
+    }
     if (words.size === 0) {
-      // Strip a plural ending ("tomatoes" -> "tomato") but not a double s ("grass").
-      const literal = escapeRegExp(term.toLowerCase().replace(/(?<!s)e?s$/, "")).replace(/ /g, "\\s+")
-      words.add(`${literal}(?:e?s)?`)
+      // Both singular guesses for a plural: "porridges" -> "porridge", and
+      // "tomatoes" -> "tomato". A double s ("grass") is not a plural.
+      const lower = term.toLowerCase()
+      const stems = /[^s]s$/.test(lower) ? [lower.slice(0, -1), ...(lower.endsWith("es") ? [lower.slice(0, -2)] : [])] : [lower]
+      for (const stem of stems) words.add(`${escapeRegExp(stem).replace(/ /g, "\\s+")}(?:e?s)?`)
     }
     return { term, re: wordPattern([...words]) }
   })

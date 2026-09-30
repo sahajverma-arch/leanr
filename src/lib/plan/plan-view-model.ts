@@ -19,6 +19,7 @@ import { db } from "@/db"
 import {
   archetypeComponents,
   clients,
+  counsellingSessions,
   dietPlanDays,
   dietPlanItems,
   dietPlanMeals,
@@ -37,6 +38,8 @@ import type { DishCombination, VegetableDishCombination, VegetableDishCombinatio
 import type { Category, Macros, RoadmapFlag } from "@/lib/counselling/types"
 import type { ProteinRampRow } from "@/lib/counselling/protein-ramp"
 import type { RoadmapResult } from "@/lib/counselling/roadmap"
+import type { Answers } from "@/lib/counselling/questions"
+import { clientFoodRules, foodRuleViolation, recipeRuleViolation } from "./client-food-rules"
 import {
   buildGuidelines,
   CATEGORY_LABEL,
@@ -53,7 +56,6 @@ import {
 } from "./plan-guidelines"
 import { buildRecipeGuidelines } from "./recipe-guidelines"
 import { recipeItemToPlanViewItem } from "./recipe-view-adapter"
-import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { TABLE_4_1, ZERO_COUNTS, type ExchangeCode, type ExchangeCounts } from "./table-4-1"
 import { describeSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 
@@ -96,10 +98,12 @@ export interface PlanViewModel {
   /** Generation warnings recorded on the plan row. Empty when the plan was a clean pass, or predates the column. */
   warnings: string[]
   /**
-   * Dishes on this plan the client's diet type forbids, by the dish's own
-   * evidence (recipe-animal-content.ts), read against the LIVE recipe row.
-   * Always empty for a plan generated since that check existed; non-empty
-   * only for an older plan, which then cannot be approved.
+   * Dishes on this plan the client must not have — wrong diet type (by the
+   * dish's own evidence), a declared allergen, or a dislike — each with its
+   * reason, e.g. `Soya Matar Sabzi Dry — matches "Soya chunks", which this
+   * client avoids`. Read against the LIVE recipe row and the LIVE counselling
+   * answers (client-food-rules.ts), so an older plan, or one whose client's
+   * answers changed since, shows it. A plan with any cannot be approved.
    */
   dietViolations: string[]
   /** One line describing the prescribed supplement, or null. Snapshotted on the plan, never a live lookup. */
@@ -136,6 +140,12 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
     .limit(1)
   if (!planRow) throw new PlanNotFoundError(planId)
   const { plan, client, roadmap } = planRow
+  const [sessionRow] = await db
+    .select({ answers: counsellingSessions.answers })
+    .from(counsellingSessions)
+    .where(eq(counsellingSessions.id, roadmap.sessionId))
+    .limit(1)
+  const foodRules = clientFoodRules((sessionRow?.answers ?? {}) as Answers, plan.dietType)
 
   const preparedByRows = plan.preparedBy
     ? await db.select().from(profiles).where(eq(profiles.id, plan.preparedBy)).limit(1)
@@ -169,6 +179,9 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
   // guidelines) is unaware of which engine produced a given plan.
   const itemsByMealId = new Map<string, PlanViewItem[]>()
   const dietViolations = new Set<string>()
+  const flag = (name: string, violation: string | null) => {
+    if (violation) dietViolations.add(`${name} — ${violation}`)
+  }
   if (plan.engine === "recipe") {
     const recipeItemRows = mealRows.length
       ? await db
@@ -183,7 +196,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
           )
       : []
     for (const { item, recipe } of recipeItemRows) {
-      if (!isRecipeAllowedForDiet(recipe, plan.dietType)) dietViolations.add(recipe.name)
+      flag(recipe.name, recipeRuleViolation(recipe, foodRules))
       const list = itemsByMealId.get(item.dietPlanMealId) ?? []
       list.push(recipeItemToPlanViewItem(item, recipe))
       itemsByMealId.set(item.dietPlanMealId, list)
@@ -202,6 +215,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
           )
       : []
     for (const { item, food } of itemRows) {
+      flag(food.nameEn, foodRuleViolation(food, foodRules))
       const exchangeType = item.exchangeType as ExchangeCode
       const macros = TABLE_4_1[exchangeType]
       const list = itemsByMealId.get(item.dietPlanMealId) ?? []

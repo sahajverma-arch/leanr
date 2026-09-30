@@ -651,6 +651,30 @@ async function persistRecipeWeek(
     )
   }
 
+  // Same hard stop for a declared allergen or a dislike. The pool was already
+  // filtered for both, so this should never fire; it is here so that no
+  // future path (repair, fixed menu, a new selector) can put one on a plate
+  // without being caught. See recipe-food-avoidance.ts.
+  const finalAvoidTerms = compileAvoidTerms(ctx.clientRecipeAvoidTerms)
+  const avoidanceViolations = days.flatMap((day) =>
+    day.meals.flatMap((meal) =>
+      meal.items.flatMap((item) => {
+        const conflict = recipeAvoidanceConflict(item.recipe, ctx.clientRecipeAllergenTags, finalAvoidTerms)
+        return conflict ? [`Day ${day.dayIndex + 1} ${meal.slot}: "${item.recipe.name}" ${conflict}`] : []
+      })
+    )
+  )
+  if (avoidanceViolations.length > 0) {
+    console.error(`[plan/generate recipe] AVOIDANCE GATE REJECTED week: ${avoidanceViolations.join(" | ")}`)
+    return NextResponse.json(
+      {
+        error: "This week was rejected: it contained food this client must not have. Nothing was saved. Please generate again.",
+        dayProblems: avoidanceViolations,
+      },
+      { status: 422 }
+    )
+  }
+
   const weeklyAverageAchieved = {
     kcal: days.reduce((sum, d) => sum + d.totals.kcal, 0) / days.length,
     proteinG: days.reduce((sum, d) => sum + d.totals.proteinG, 0) / days.length,
