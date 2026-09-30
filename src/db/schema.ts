@@ -171,6 +171,25 @@ export const weeklyCheckins = pgTable(
 
 export type WeeklyCheckin = typeof weeklyCheckins.$inferSelect
 
+/**
+ * "Same food on all days" — a client's fixed daily menu, set by the dietitian
+ * on the review page. Keyed on the client, not a roadmap, so recomputing the
+ * roadmap keeps it. `items` is validated by src/lib/plan/fixed-menu.ts.
+ * See CLAUDE.md "Same food on all days".
+ */
+export const clientFixedMenus = pgTable("client_fixed_menus", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clientId: uuid("client_id")
+    .notNull()
+    .unique()
+    .references(() => clients.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(false),
+  items: jsonb("items").notNull().default([]),
+  createdBy: uuid("created_by").references(() => profiles.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
 /** Table 4.1 — Comprehensive Food Exchange List (11 rows). READ-ONLY at runtime. See CLAUDE.md "The exchange system". */
 export const exchangeTypes = pgTable("exchange_types", {
   code: text("code").primaryKey(),
@@ -425,7 +444,8 @@ export const dietPlans = pgTable("diet_plans", {
   // deleted (20260819100000_recipe_engine_pipeline.sql) — it never
   // reappears in this enum.
   engine: text("engine", { enum: ["exchange", "recipe"] }).notNull().default("exchange"),
-  generationMode: text("generation_mode", { enum: ["ai", "fallback"] }).notNull(),
+  // "fixed_menu": the dietitian chose every dish (same food on all days); no model ran.
+  generationMode: text("generation_mode", { enum: ["ai", "fallback", "fixed_menu"] }).notNull(),
   modelUsed: text("model_used"),
   preparedBy: uuid("prepared_by").references(() => profiles.id),
   status: text("status", { enum: ["draft", "approved"] })

@@ -38,7 +38,7 @@ import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-catego
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import type { DailyRecipeTarget, GroundedRecipeDay, GroundedRecipeItem, RecipeAchievedMacros, RecipeForPipeline } from "./recipe-types"
 import { RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
-import { MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
+import { isEverydayStaple, repeatCapFor } from "./recipe-variety-tracker"
 
 /**
  * The macros the repair steers on — the same four recipe-validate.ts gates
@@ -95,6 +95,26 @@ export interface RepairPool {
    * recipes — then the regional pass is a no-op.
    */
   regionalByBucket: Map<RecipeCategoryBucket, RecipeForPipeline[]>
+  /**
+   * The same pool keyed by varietyFamily() — what the variety pass swaps
+   * within. Narrower than a bucket on purpose: "bread" holds roti AND
+   * sandwiches, "dal_curry" holds rajma AND oats porridge, so a bucket-level
+   * swap could turn a lunch roti into a sandwich.
+   */
+  byFamily: Map<string, RecipeForPipeline[]>
+}
+
+/**
+ * Which dishes can stand in for each other when a plate is changed purely
+ * for variety: the same raw CSV Category and the same Main/Mid role, with
+ * "Dal" and "Curry" treated as one family (Arhar Dal for Rajma Curry is
+ * exactly the swap a dietitian would make). Real categories, checked against
+ * the North Indian vegetarian pool: Roti 17, Rice 4, Dal 9, Curry 9,
+ * Paratha 35, Chila 23, Sabzi 32, High Protein Sabzi 14, Chaat 24...
+ */
+export function varietyFamily(recipe: Pick<RecipeForPipeline, "category" | "mainOrMid">): string {
+  const category = recipe.category.trim().toLowerCase()
+  return `${category === "dal" ? "curry" : category}|${recipe.mainOrMid}`
 }
 
 /**
@@ -109,6 +129,7 @@ export interface RepairPool {
  */
 export function buildRepairPool(pool: Iterable<RecipeForPipeline>, clientCuisine?: string): RepairPool {
   const byBucket = new Map<RecipeCategoryBucket, RecipeForPipeline[]>()
+  const byFamily = new Map<string, RecipeForPipeline[]>()
   const regionalByBucket = new Map<RecipeCategoryBucket, RecipeForPipeline[]>()
   const regional = clientCuisine && clientCuisine !== "General" ? clientCuisine : null
   for (const recipe of pool) {
@@ -116,6 +137,10 @@ export function buildRepairPool(pool: Iterable<RecipeForPipeline>, clientCuisine
     const existing = byBucket.get(bucket)
     if (existing) existing.push(recipe)
     else byBucket.set(bucket, [recipe])
+    const family = varietyFamily(recipe)
+    const familyList = byFamily.get(family)
+    if (familyList) familyList.push(recipe)
+    else byFamily.set(family, [recipe])
     if (regional && recipe.cuisine === regional) {
       const own = regionalByBucket.get(bucket)
       if (own) own.push(recipe)
@@ -125,7 +150,8 @@ export function buildRepairPool(pool: Iterable<RecipeForPipeline>, clientCuisine
   const byId = (a: RecipeForPipeline, b: RecipeForPipeline) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
   for (const recipes of byBucket.values()) recipes.sort(byId)
   for (const recipes of regionalByBucket.values()) recipes.sort(byId)
-  return { byBucket, regionalByBucket }
+  for (const recipes of byFamily.values()) recipes.sort(byId)
+  return { byBucket, regionalByBucket, byFamily }
 }
 
 function regionalRecipeIds(pool: RepairPool): Set<string> {
@@ -295,7 +321,7 @@ export function repairDay(
           // guarantee repair introduces no new variety violation — while
           // leaving any the model already created alone rather than
           // refusing to repair the day at all.
-          if ((weeklyCounts.get(recipe.name) ?? 0) >= MAX_RECIPE_REPEATS_PER_WEEK) continue
+          if ((weeklyCounts.get(recipe.name) ?? 0) >= repeatCapFor(recipe)) continue
           candidates.push({ mealIndex, itemIndex, recipe, estimate: bestAchievableWorst(othersTotals, recipe, target) })
         }
       })
@@ -416,7 +442,7 @@ function ensureRegionalDish(
         }
         for (const recipe of alternatives) {
           if (namesInMeal.has(recipe.name)) continue
-          if ((weeklyCounts.get(recipe.name) ?? 0) >= MAX_RECIPE_REPEATS_PER_WEEK) continue
+          if ((weeklyCounts.get(recipe.name) ?? 0) >= repeatCapFor(recipe)) continue
           candidates.push({ mealIndex, itemIndex, recipe, estimate: bestAchievableWorst(othersTotals, recipe, target) })
         }
       })
@@ -489,5 +515,151 @@ export function repairWeek(
     swaps.push(...result.swaps)
     return result.day
   })
-  return { days: repaired, swaps }
+  const varied = enforceVariety(repaired, target, pool, constraints)
+  return { days: varied.days, swaps: [...swaps, ...varied.swaps] }
+}
+
+/**
+ * A variety swap may move a day's worst macro up to here, or leave it no
+ * worse than it already was — the same slack a regional dish gets, for the
+ * same reason: a plate that does not repeat is worth a little macro room,
+ * never a failed day.
+ */
+export const VARIETY_DEVIATION_CEILING = REGIONAL_DEVIATION_CEILING
+
+/** Upper bound on variety swaps in one week — a guard, not a target; a real week needs a handful. */
+const MAX_VARIETY_SWAPS_PER_WEEK = 30
+
+interface Occurrence {
+  dayPos: number
+  mealIndex: number
+  itemIndex: number
+}
+
+/**
+ * The first item, in day/meal order, that breaks a variety rule: its weekly
+ * count is over repeatCapFor(), or it is a dish (not a staple) already served
+ * earlier today or yesterday. Always the LATER occurrence, so the first time
+ * a dish appears is what stays.
+ */
+function nextVarietyOffence(days: GroundedRecipeDay[], skip: Set<string>): Occurrence | null {
+  const counts = new Map<string, number>()
+  let yesterday = new Set<string>()
+  for (let dayPos = 0; dayPos < days.length; dayPos++) {
+    const today = new Set<string>()
+    const meals = days[dayPos].meals
+    for (let mealIndex = 0; mealIndex < meals.length; mealIndex++) {
+      const items = meals[mealIndex].items
+      for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+        const recipe = items[itemIndex].recipe
+        const count = (counts.get(recipe.id) ?? 0) + 1
+        counts.set(recipe.id, count)
+        const backToBack = !isEverydayStaple(recipe) && (today.has(recipe.id) || yesterday.has(recipe.id))
+        today.add(recipe.id)
+        if ((count > repeatCapFor(recipe) || backToBack) && !skip.has(`${dayPos}:${mealIndex}:${itemIndex}:${recipe.id}`)) {
+          return { dayPos, mealIndex, itemIndex }
+        }
+      }
+    }
+    yesterday = today
+  }
+  return null
+}
+
+function recipeIdsOnDay(day: GroundedRecipeDay | undefined): Set<string> {
+  return new Set(day ? day.meals.flatMap((meal) => meal.items.map((item) => item.recipe.id)) : [])
+}
+
+/**
+ * WHY THIS EXISTS. Measured on 14 real North Indian plans (2026-09-29): the
+ * prompt's "no recipe more than twice" rule was broken on every one of them
+ * (Rajma Curry four times in a single week), and on the best-of-N path a
+ * variety breach is only a warning, so nothing ever corrected it. A prompt
+ * rule is not a guarantee; this is.
+ *
+ * Swaps an over-used or back-to-back dish for another from the same
+ * varietyFamily() — a dal for a dal, a roti for a roti — never used yet this
+ * week if possible, re-balances the day, and keeps the swap only if it adds
+ * no plausibility problem and leaves the day within VARIETY_DEVIATION_CEILING
+ * (or no worse than it was). A regional dish is only swapped for another
+ * regional dish, so the regional pass's guarantee survives. When no swap
+ * qualifies the repeat stays, and buildRecipeWarnings() reports it.
+ */
+export function enforceVariety(
+  days: GroundedRecipeDay[],
+  target: DailyRecipeTarget,
+  pool: RepairPool,
+  constraints: ClientRecipeConstraints
+): { days: GroundedRecipeDay[]; swaps: RepairSwap[] } {
+  const swaps: RepairSwap[] = []
+  const current = [...days]
+  const skip = new Set<string>()
+  const regionalIds = regionalRecipeIds(pool)
+  const weeklyCounts = countWeeklyRecipeUse(current)
+
+  for (let round = 0; round < MAX_VARIETY_SWAPS_PER_WEEK; round++) {
+    const offence = nextVarietyOffence(current, skip)
+    if (offence === null) break
+    const day = current[offence.dayPos]
+    const item = day.meals[offence.mealIndex].items[offence.itemIndex]
+    const offenceKey = `${offence.dayPos}:${offence.mealIndex}:${offence.itemIndex}:${item.recipe.id}`
+
+    if (day.meals.some((meal) => meal.items.some((i) => i.gramsLocked))) {
+      skip.add(offenceKey)
+      continue
+    }
+
+    const worstNow = worstRelativeDeviation(day.totals, target)
+    const allowed = Math.max(worstNow, VARIETY_DEVIATION_CEILING)
+    const baselineProblems = describePlausibilityProblems(day, constraints).length
+    const nearby = new Set([
+      ...recipeIdsOnDay(current[offence.dayPos - 1]),
+      ...recipeIdsOnDay(day),
+      ...recipeIdsOnDay(current[offence.dayPos + 1]),
+    ])
+    const namesInMeal = new Set(day.meals[offence.mealIndex].items.map((i) => i.recipe.name))
+    const own = contributionOf(item)
+    const othersTotals: MacroTotals = {
+      kcal: day.totals.kcal - own.kcal,
+      proteinG: day.totals.proteinG - own.proteinG,
+      carbsG: day.totals.carbsG - own.carbsG,
+      fatG: day.totals.fatG - own.fatG,
+    }
+
+    const mustStayRegional = regionalIds.has(item.recipe.id)
+    const candidates = (pool.byFamily.get(varietyFamily(item.recipe)) ?? [])
+      .filter((recipe) => {
+        if (recipe.id === item.recipe.id || namesInMeal.has(recipe.name)) return false
+        if (mustStayRegional && !regionalIds.has(recipe.id)) return false
+        if ((weeklyCounts.get(recipe.name) ?? 0) >= repeatCapFor(recipe)) return false
+        if (!isEverydayStaple(recipe) && nearby.has(recipe.id)) return false
+        return true
+      })
+      .map((recipe) => ({ recipe, used: weeklyCounts.get(recipe.name) ?? 0, estimate: bestAchievableWorst(othersTotals, recipe, target) }))
+      .filter((c) => c.estimate <= allowed)
+      // Not yet used this week first — the point is a new dish, not a
+      // different repeat — then whichever fits the day's macros best.
+      .sort((a, b) => a.used - b.used || a.estimate - b.estimate || (a.recipe.id < b.recipe.id ? -1 : 1))
+
+    let best: { day: GroundedRecipeDay; score: number; used: number; recipe: RecipeForPipeline } | null = null
+    for (const candidate of candidates.slice(0, MAX_FULL_EVALUATIONS_PER_ROUND)) {
+      if (best !== null && candidate.used > best.used) break
+      const rebalanced = balanceDayToTargets(replaceItem(day, offence.mealIndex, offence.itemIndex, candidate.recipe), target)
+      if (describePlausibilityProblems(rebalanced, constraints).length > baselineProblems) continue
+      const score = worstRelativeDeviation(rebalanced.totals, target)
+      if (score > allowed) continue
+      if (best === null || score < best.score) best = { day: rebalanced, score, used: candidate.used, recipe: candidate.recipe }
+    }
+
+    if (best === null) {
+      skip.add(offenceKey)
+      continue
+    }
+    weeklyCounts.set(item.recipe.name, Math.max(0, (weeklyCounts.get(item.recipe.name) ?? 1) - 1))
+    weeklyCounts.set(best.recipe.name, (weeklyCounts.get(best.recipe.name) ?? 0) + 1)
+    swaps.push({ dayIndex: day.dayIndex, slot: day.meals[offence.mealIndex].slot, from: item.recipe.name, to: best.recipe.name })
+    current[offence.dayPos] = best.day
+  }
+
+  return { days: current, swaps }
 }

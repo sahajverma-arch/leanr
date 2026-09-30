@@ -10,7 +10,7 @@
 
 import { describeMacroProblems, RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
-import { findVarietyViolations, MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
+import { findBackToBackRepeats, findVarietyViolations } from "./recipe-variety-tracker"
 import type { DailyRecipeTarget, GroundedRecipeDay, RecipeAchievedMacros } from "./recipe-types"
 
 const SUMMARISED_MACROS = [
@@ -59,7 +59,7 @@ export function buildRecipeWarnings(
   constraints: ClientRecipeConstraints
 ): string[] {
   const warnings: string[] = []
-  const overused = new Set(findVarietyViolations(days).map((v) => v.name))
+  const overused = findVarietyViolations(days)
 
   for (const day of days) {
     for (const problem of describeMacroProblems(day.totals, target)) {
@@ -72,8 +72,12 @@ export function buildRecipeWarnings(
       warnings.push(`Day ${day.dayIndex + 1}: recipes hit their serving limit: ${day.cappedRecipeNames.join(", ")}`)
     }
   }
-  if (overused.size > 0) {
-    warnings.push(`Used more than ${MAX_RECIPE_REPEATS_PER_WEEK} times this week: ${[...overused].join(", ")}`)
+  if (overused.length > 0) {
+    warnings.push(`Repeated more than its weekly limit: ${overused.map((v) => `${v.name} (${v.count}x, limit ${v.cap})`).join(", ")}`)
+  }
+  const backToBack = findBackToBackRepeats(days)
+  if (backToBack.length > 0) {
+    warnings.push(`Same dish on consecutive days or twice in one day: ${backToBack.map((r) => `${r.name} (day ${r.dayIndex + 1})`).join(", ")}`)
   }
   return warnings
 }

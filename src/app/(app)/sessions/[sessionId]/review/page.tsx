@@ -1,10 +1,28 @@
-import { desc, eq } from "drizzle-orm"
+import { desc, eq, inArray } from "drizzle-orm"
 import { notFound } from "next/navigation"
 import Link from "next/link"
 
 import { db } from "@/db"
-import { clients, counsellingSessions, mealTemplates, roadmapOverrides, roadmapSupplements, roadmapWeekTargets, roadmaps } from "@/db/schema"
-import { proteinPowderRestriction, regionFromAnswers } from "@/lib/plan/client-profile-from-answers"
+import { clientFixedMenus, clients, counsellingSessions, mealTemplates, recipes, roadmapOverrides, roadmapSupplements, roadmapWeekTargets, roadmaps } from "@/db/schema"
+import {
+  clientRecipeAllergenTagsFromAnswers,
+  clientRecipeAvoidTermsFromAnswers,
+  dietTypeFromAnswers,
+  proteinPowderRestriction,
+  regionFromAnswers,
+} from "@/lib/plan/client-profile-from-answers"
+import { FixedMenuCard, type FixedMenuCardItem, type FixedMenuPreview } from "@/components/review/fixed-menu-card"
+import { compileAvoidTerms } from "@/lib/foods/recipe-food-avoidance"
+import { RECIPE_CUISINES } from "@/lib/foods/recipe-cuisine-mapping"
+import {
+  buildFixedMenuDay,
+  FIXED_MENU_SLOTS,
+  fixedMenuItemsSchema,
+  fixedMenuProblems,
+  fixedMenuRefusals,
+  fixedMenuWarnings,
+} from "@/lib/plan/fixed-menu"
+import { RECIPE_PIPELINE_COLUMNS, type DailyRecipeTarget } from "@/lib/plan/recipe-types"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { CalcCard } from "@/components/review/calc-card"
@@ -132,6 +150,59 @@ export default async function ReviewPage({
     return { week, computed, override, prescribed, ...foodTargetsAfterSupplement(prescribed, supplement) }
   })
   const supplementWarnings = upcomingWeeks[0]?.warnings ?? []
+
+  // "Same food on all days" — the preview runs the SAME build generation
+  // runs (fixed-menu.ts), against week 1's food target, on the saved menu.
+  const [fixedMenuRow] = await db.select().from(clientFixedMenus).where(eq(clientFixedMenus.clientId, client.id)).limit(1)
+  const fixedMenuItems = fixedMenuRow ? fixedMenuItemsSchema.parse(fixedMenuRow.items) : []
+  const fixedMenuRecipeRows = fixedMenuItems.length
+    ? await db
+        .select(RECIPE_PIPELINE_COLUMNS)
+        .from(recipes)
+        .where(inArray(recipes.id, [...new Set(fixedMenuItems.map((i) => i.recipeId))]))
+    : []
+  const fixedMenuRecipesById = new Map(fixedMenuRecipeRows.map((r) => [r.id, r]))
+  const fixedMenuCardItems: FixedMenuCardItem[] = fixedMenuItems.map((i) => ({
+    ...i,
+    name: fixedMenuRecipesById.get(i.recipeId)?.name ?? "(dish no longer exists)",
+  }))
+  const fixedMenuPreview = buildFixedMenuPreview()
+
+  function buildFixedMenuPreview(): FixedMenuPreview | null {
+    const week1 = upcomingWeeks[0]
+    if (!fixedMenuRow?.enabled || !week1 || fixedMenuProblems(fixedMenuItems).length > 0) return null
+    let dietType
+    try {
+      dietType = dietTypeFromAnswers(answers)
+    } catch {
+      return null
+    }
+    const avoidTerms = compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(answers))
+    const allergenTags = clientRecipeAllergenTagsFromAnswers(answers)
+    const refusals = fixedMenuRefusals(fixedMenuItems, fixedMenuRecipesById, { dietType, allergenTags, avoidTerms })
+    const target: DailyRecipeTarget = {
+      kcal: week1.food.kcal,
+      proteinG: week1.food.proteinG,
+      carbsG: week1.food.carbsG,
+      fatG: week1.food.fatG,
+      fiberG: week1.food.fibreG,
+    }
+    const slots = FIXED_MENU_SLOTS.map((s, n) => ({ slot: s.slot, slotOrder: n + 1, timeHint: null }))
+    const usable = fixedMenuItems.filter((i) => fixedMenuRecipesById.has(i.recipeId))
+    if (fixedMenuProblems(usable).length > 0) return null
+    const day = buildFixedMenuDay(usable, fixedMenuRecipesById, slots, target)
+    const plannedGrams: Record<string, number> = {}
+    for (const meal of day.meals) for (const item of meal.items) plannedGrams[`${meal.slot}:${item.recipe.id}`] = item.grams
+    return {
+      plannedGrams,
+      totals: day.totals,
+      target,
+      warnings: [
+        ...refusals.map((r) => `Cannot be served — ${r}`),
+        ...fixedMenuWarnings(day, target, { dietType, eligibleCuisines: [...RECIPE_CUISINES], allergenTags, avoidTerms }),
+      ],
+    }
+  }
 
   return (
     <div className="mx-auto max-w-3xl space-y-8 pb-16 print:max-w-full">
@@ -402,6 +473,18 @@ export default async function ReviewPage({
             )}
           </CardContent>
         </Card>
+      </section>
+
+      {/* Meal routine — "same food on all days". Placed after the
+          targets table, since its preview is balanced against week 1. */}
+      <section>
+        <h2 className="mb-3 font-serif text-lg font-semibold">Meal routine</h2>
+        <FixedMenuCard
+          sessionId={sessionId}
+          enabled={fixedMenuRow?.enabled ?? false}
+          items={fixedMenuCardItems}
+          preview={fixedMenuPreview}
+        />
       </section>
 
       {/* 8. Flags */}

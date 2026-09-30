@@ -86,6 +86,17 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
         </div>
       )}
 
+      {/* A fixed-menu plan was chosen dish by dish by the dietitian and is the
+          same on every day — say so, so it is never read as AI output. Screen
+          only: the client does not need to be told how the plan was made. */}
+      {plan.generationMode === "fixed_menu" && (
+        <div className="rounded-xl border border-sky-600/60 bg-sky-50 p-3 text-sm text-sky-950 print:hidden dark:bg-sky-950 dark:text-sky-100">
+          <strong>Same food on all days.</strong> Built from the fixed menu set on the review page — every day is
+          identical. To change the menu for every day at once, edit it on the review page and generate again. An edit
+          made here changes only that one day.
+        </div>
+      )}
+
       {/* Prescribed supplement. Above everything, because it is the one part
           of the day the plan does not cook — the client has to be told to
           take it, and the day's protein only adds up if they do. */}

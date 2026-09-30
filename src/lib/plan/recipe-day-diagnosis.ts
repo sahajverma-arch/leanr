@@ -13,7 +13,6 @@
 
 import { describeMacroProblems } from "./recipe-validate"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
-import { MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
 import type { GroundedRecipeDay, RecipeSelectorInput } from "./recipe-types"
 
 /**
@@ -57,7 +56,7 @@ export function blockingProblems(
   }
   for (const name of overusedRecipeNames) {
     if (day.meals.some((m) => m.items.some((i) => i.recipe.name === name))) {
-      problems.push(`"${name}" has already been used more than ${MAX_RECIPE_REPEATS_PER_WEEK} times this week — choose a different recipe for this day.`)
+      problems.push(`"${name}" has already been used more times this week than its variety limit allows — choose a different recipe for this day.`)
     }
   }
   return problems

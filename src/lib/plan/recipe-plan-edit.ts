@@ -39,7 +39,8 @@ import { applyWeekTargetOverride, type WeekTargetOverride } from "@/lib/counsell
 import { eligibleCuisinesFor, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import { recipeSeasonMatches } from "@/lib/foods/recipe-season-mapping"
 import type { Season } from "@/lib/foods/vocab"
-import { clientRecipeAllergenTagsFromAnswers } from "@/lib/plan/client-profile-from-answers"
+import { clientRecipeAllergenTagsFromAnswers, clientRecipeAvoidTermsFromAnswers } from "@/lib/plan/client-profile-from-answers"
+import { compileAvoidTerms, recipeAvoidanceConflict, type CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { deviationOf, rebalanceDay, weeklyAverageOf, type StoredRecipeMeal } from "./recipe-swap"
 import { RECIPE_PIPELINE_COLUMNS, type DailyRecipeTarget, type RecipeForPipeline } from "./recipe-types"
@@ -76,6 +77,8 @@ export interface RecipePlanContext {
    * edit is allowed to put on the plate.
    */
   allergenTags: string[]
+  /** q36 dislikes / "Other" allergy names, compiled. Live from the answers, for the same reason. */
+  avoidTerms: CompiledAvoidTerm[]
   season: Season
   constraints: ClientRecipeConstraints
 }
@@ -101,6 +104,7 @@ async function contextForPlan(plan: typeof dietPlans.$inferSelect): Promise<Reci
   )
   const { food } = foodTargetsAfterSupplement(wt, (plan.supplement as PrescribedSupplement | null) ?? null)
   const allergenTags = clientRecipeAllergenTagsFromAnswers(answers)
+  const avoidTerms = compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(answers))
 
   return {
     planId: plan.id,
@@ -109,8 +113,9 @@ async function contextForPlan(plan: typeof dietPlans.$inferSelect): Promise<Reci
     cuisine,
     target: { kcal: food.kcal, proteinG: food.proteinG, carbsG: food.carbsG, fatG: food.fatG, fiberG: food.fibreG },
     allergenTags,
+    avoidTerms,
     season: seasonFor(plan.weekStart, cuisine),
-    constraints: { dietType: plan.dietType, eligibleCuisines: eligibleCuisinesFor(cuisine), allergenTags },
+    constraints: { dietType: plan.dietType, eligibleCuisines: eligibleCuisinesFor(cuisine), allergenTags, avoidTerms },
   }
 }
 
@@ -154,7 +159,7 @@ export function assertEditable(ctx: RecipePlanContext): void {
 
 /**
  * Every recipe this client could be given, filtered exactly as generation
- * filters its pool: diet type, cuisine, season, live allergens, and the same
+ * filters its pool: diet type, cuisine, season, live allergens and dislikes, and the same
  * "a row claiming to be food with no energy is not offerable" rule
  * (recipe-pool-filters.ts). Eligibility is re-checked server-side on the
  * write too, never trusted from whatever the picker last showed.
@@ -169,7 +174,7 @@ export async function eligibleRecipesForPlan(ctx: RecipePlanContext): Promise<Re
     (r) =>
       isRecipeAllowedForDiet(r, ctx.dietType) &&
       recipeSeasonMatches(r.season, ctx.season) &&
-      !r.allergenTags.some((t) => ctx.allergenTags.includes(t)) &&
+      recipeAvoidanceConflict(r, ctx.allergenTags, ctx.avoidTerms) === null &&
       r.kcalPer100G > 0
   )
 }
@@ -179,9 +184,9 @@ export function assertRecipeAllowed(recipe: RecipeForPipeline, ctx: RecipePlanCo
   if (!isRecipeAllowedForDiet(recipe, ctx.dietType)) {
     throw new PlanEditError(`${recipe.name} is not suitable for a ${ctx.dietType} client.`)
   }
-  const blocked = recipe.allergenTags.filter((t) => ctx.allergenTags.includes(t))
-  if (blocked.length > 0) {
-    throw new PlanEditError(`${recipe.name} contains ${blocked.join(", ")}, which this client must avoid.`)
+  const avoidance = recipeAvoidanceConflict(recipe, ctx.allergenTags, ctx.avoidTerms)
+  if (avoidance) {
+    throw new PlanEditError(`${recipe.name} ${avoidance}.`)
   }
   // Must use the SAME rule the picker used. Checking `recipe.season !== ctx.season`
   // here would reject exactly the dishes the monsoon relaxation just made

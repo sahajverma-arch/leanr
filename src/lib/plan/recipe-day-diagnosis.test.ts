@@ -81,7 +81,7 @@ describe("blockingProblems — what actually rejects a plan", () => {
 
   it("still blocks on a variety violation", () => {
     const problems = blockingProblems(healthyDay(), INPUT, CONSTRAINTS, new Set(["Roti"]))
-    expect(problems.join(" ")).toMatch(/more than 2 times/i)
+    expect(problems.join(" ")).toMatch(/variety limit/i)
   })
 
   it("still blocks on an unresolvable recipe name", () => {

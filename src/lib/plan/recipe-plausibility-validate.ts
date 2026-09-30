@@ -6,6 +6,7 @@
  */
 
 import { isAnimalProteinRecipe, isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
+import { recipeAvoidanceConflict, type CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
 import { DAL_BUCKET, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MEAT_CONFLICTING_BUCKETS, STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { isMustHaveSatisfied } from "./recipe-pairing"
@@ -15,6 +16,8 @@ export interface ClientRecipeConstraints {
   dietType: string
   eligibleCuisines: string[]
   allergenTags: string[]
+  /** Compiled q36 dislikes / "Other" allergy names (recipe-food-avoidance.ts). Omitted = none. */
+  avoidTerms?: CompiledAvoidTerm[]
 }
 
 // A meal may never stack more than one of these together — the same
@@ -121,9 +124,10 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
       if (!constraints.eligibleCuisines.includes(item.recipe.cuisine)) {
         problems.push(`${meal.slot}'s "${item.recipe.name}" is not eligible for the requested cuisine`)
       }
-      const forbiddenAllergen = item.recipe.allergenTags.find((t) => constraints.allergenTags.includes(t))
-      if (forbiddenAllergen) {
-        problems.push(`${meal.slot}'s "${item.recipe.name}" contains a declared allergen: ${forbiddenAllergen}`)
+      // Name evidence too, not only the stored tags: the CSV never tags soy.
+      const avoidance = recipeAvoidanceConflict(item.recipe, constraints.allergenTags, constraints.avoidTerms ?? [])
+      if (avoidance) {
+        problems.push(`${meal.slot}'s "${item.recipe.name}" ${avoidance}`)
       }
     }
 

@@ -14,7 +14,8 @@ import { db } from "../src/db"
 import { clients, counsellingSessions, mealTemplates, recipeAliases, recipes, roadmaps } from "../src/db/schema"
 import type { Answers } from "../src/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "../src/lib/counselling/roadmap"
-import { clientRecipeAllergenTagsFromAnswers, dietTypeFromAnswers } from "../src/lib/plan/client-profile-from-answers"
+import { clientRecipeAllergenTagsFromAnswers, clientRecipeAvoidTermsFromAnswers, dietTypeFromAnswers } from "../src/lib/plan/client-profile-from-answers"
+import { compileAvoidTerms, recipeAvoidanceConflict } from "../src/lib/foods/recipe-food-avoidance"
 import { eligibleCuisinesFor, templateRegionForCuisine, type RecipeCuisine } from "../src/lib/foods/recipe-cuisine-mapping"
 import { recipeSeasonMatches } from "../src/lib/foods/recipe-season-mapping"
 import { selectRecipes, RecipeSelectionRejectedError } from "../src/lib/plan/recipe-selector"
@@ -81,6 +82,7 @@ async function main() {
     .from(recipes)
     .where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisines)))
   const clientRecipeAllergenTags = clientRecipeAllergenTagsFromAnswers(session.answers as Answers)
+  const avoidTerms = compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(session.answers as Answers))
   const dailyRecipeTarget: DailyRecipeTarget = {
     kcal: dailyTarget.kcal,
     proteinG: dailyTarget.proteinG,
@@ -97,7 +99,7 @@ async function main() {
       (r) =>
         isRecipeAllowedForDiet(r, dietType) &&
         recipeSeasonMatches(r.season, season) &&
-        !r.allergenTags.some((t) => clientRecipeAllergenTags.includes(t))
+        recipeAvoidanceConflict(r, clientRecipeAllergenTags, avoidTerms) === null
     ))
   console.log(`Eligible recipe pool: ${filtered.length} / ${cuisineRows.length} cuisine-matched / ${await db.$count(recipes)} total`)
 
@@ -143,7 +145,7 @@ async function main() {
     clientAllergenTags: clientRecipeAllergenTags,
     aliasRows,
   }
-  const constraints: ClientRecipeConstraints = { dietType, eligibleCuisines, allergenTags: clientRecipeAllergenTags }
+  const constraints: ClientRecipeConstraints = { dietType, eligibleCuisines, allergenTags: clientRecipeAllergenTags, avoidTerms }
 
   // Cost probe: build the real prompt and size it WITHOUT calling the API.
   // A rejected week costs one whole-week call plus (retry rounds x failing

@@ -1200,11 +1200,13 @@ was no per-recipe "typical" figure at all).
   fix once addressed), and a defense-in-depth re-check that every grounded item still satisfies the
   client's diet-type/cuisine/allergen constraints (the prompt pool was pre-filtered, but a fuzzy-tier
   resolution could in principle land on an ineligible recipe).
-- `recipe-variety-tracker.ts` — recipe repetition is tracked and enforced in code
-  (`MAX_RECIPE_REPEATS_PER_WEEK = 2`), not left as a hopeful prompt instruction alone (the prompt's
-  own "no recipe >2x" rule stays too, as a first line of defense). Computed once after the whole-week
-  grounding (a genuinely week-level signal); a day is flagged for retry the moment a recipe's
-  cumulative count, in day order, exceeds the cap.
+- `recipe-variety-tracker.ts` — recipe repetition is tracked and enforced in code, not left as a
+  hopeful prompt instruction alone (the prompt states the same rules too, as a first line of
+  defense). Two caps since 2026-09-29: a dish at most `MAX_RECIPE_REPEATS_PER_WEEK` (2) times and
+  never back to back; a plain roti/rice or a side at most `MAX_STAPLE_REPEATS_PER_WEEK` (4). See
+  "Variety across days, weeks and clients" below. Computed once after the whole-week grounding (a
+  genuinely week-level signal); a day is flagged for retry the moment a recipe's cumulative count,
+  in day order, exceeds its cap.
 
 ### Tolerance and reject semantics — a real ethos change from every prior engine
 
@@ -1365,6 +1367,66 @@ weekly average within 2% on every macro, zero non-veg. **Still open:** repair ca
 generic home dish (a khichdi) for a porridge when chasing protein — cuisine protection covers only
 dishes tagged with the client's cuisine, and Gujarati dinners (khichdi-kadhi) are General-tagged.
 
+### Variety across days, weeks and clients (2026-09-29)
+
+**The complaint:** North Indian plans were "very repetitive — only the quantity changes." Measured
+over the 14 saved North Indian recipe plans before changing anything
+(`scripts/measure-plan-overlap.ts`): Roti was in 14/14 plans, Jeera Rice 13, Rajma Curry 12,
+White Chana Curry 12, Kala Chana 10. Within a week, lunch was Roti + a legume curry + sabzi + salad
+every day, and Rajma appeared up to 4 times. The pool has 18 real dals/curries and 17 rotis.
+
+**Four causes, all measured:**
+1. **One prompt for everyone.** Same pool, same table order, same rules at temperature 0.3, for
+   every client with the same cuisine and diet type — and for all N best-of-N attempts, which were
+   therefore near-copies of one week. N bought macro luck, never variety.
+2. **Protein pulls toward three dishes.** Rajma (9.7 g/100g), White Chana (10.0) and Kala Chana
+   (11.7) are the most protein-dense vegetarian curries, and the prompt says to prefer high protein.
+   The North Indian pattern line also literally named "rajma/chole".
+3. **The variety cap was only a warning** on the best-of-N path, and "max 2" was unrealistic for
+   plain roti, so it fired on every plan and meant nothing.
+4. **Week 2 only avoided week 1's last day**, not the week.
+
+**Fixes:**
+- `recipe-week-rotation.ts` — a seeded "this week's rotation" in the prompt: 8 dals/curries, 8
+  sabzis, 4 rotis, 4 rice/khichdi options, 7 breakfasts, 7 snacks, drawn by weighted sampling
+  (own cuisine ×3, last week's dishes ×0.2). The table order is shuffled with the same seed. The
+  route sets `varietySeed = roadmapId:week:uuid`, so each client, week and "generate again" is
+  different, and each best-of-N attempt appends its attempt number, so the N samples differ too.
+  Suggestions only — the eligible pool is untouched. Kept out of suggestions (still in the table):
+  vrat-only dishes, shirataki, and dal/curry rows under 4 g protein/100g (Dum Aloo 2.7), because
+  that slot is the day's protein dish and suggesting a potato gravy there cost protein on a real run.
+  No seed = no rotation section and pool order, exactly as before.
+- `recipe-variety-tracker.ts` — two caps (dish 2, staple/side 4; a staple is a "Roti"/"Rice"
+  category row or any Mid item) plus `findBackToBackRepeats()` (same dish on consecutive days or at
+  lunch and dinner).
+- `recipe-repair.ts` `enforceVariety()` — runs after macro repair in `repairWeek()`, so both
+  generation paths get it. Swaps a repeat for a dish of the same `varietyFamily()` (same raw
+  Category and Main/Mid; Dal and Curry are one family) — never across a bucket, because "bread"
+  holds sandwiches and "dal_curry" holds porridges. Unused dishes first, then best macro fit.
+  Accepted only if it adds no plausibility problem and the day's worst macro stays within
+  `VARIETY_DEVIATION_CEILING` (6%) or no worse than before — the same slack a regional dish gets.
+  Regional dishes are only swapped for regional dishes.
+- Prompt: explicit variety rules, and the North Indian pattern now names the whole dal and roti
+  range. Previous week: the route now reads the whole previous week in one query and passes it as
+  `previousWeekRecipes`.
+- Warnings now name each over-limit dish with its count and limit, and list back-to-back repeats.
+
+**Measured on four live best-of-5 runs (North Indian):** dals rotated through arhar, urad,
+high-protein, mixed, palak moong, kadhi, dal palak, rajma and chole; rotis through bajra, makki,
+jowar, chana dal, oats and jaun. Three of four weeks had nothing over a cap. Sahaj and Ajay landed
+within 1% on every macro. Praveen (27% of kcal from protein, vegetarian) landed at −12% to −15%
+protein, against −12.9% on his saved plan and −10.8% on the old prompt the same day. His target is
+hard either way. For a protein-starved day the variety pass often can't find a swap inside the
+slack, so repeats stay there and are warned about, not forced.
+
+**Still open, seen in these runs and not caused by this change:** macro repair swaps within a
+whole *bucket*, so a dinner dal can become Kasha/Multigrain Porridge. Narrowing it to
+`varietyFamily()` is the obvious fix, but it changes the measured repair results (75/84 days), so it
+needs its own measurement. Also a non-vegetarian run (Ajay) came back with no chicken or fish. Nothing
+requires it, and whether it should is a dietitian call. **Operational:** one best-of-5 generation
+sends ~170k tokens against a 200k TPM limit, so two generations in the same minute fail with 429s
+on every attempt.
+
 ### Diet type is decided by the dish's evidence, not its label (2026-09-23)
 
 **A vegetarian client was served fish on 6 of 7 days.** Dhruti (vegetarian, Gujarati) got Goan Fish
@@ -1404,6 +1466,33 @@ not trust a re-seeded label on its own. After any recipe CSV update, run
 mislabelled non-veg dish comes back. Pool sizes after the fix: vegetarian 1074, eggetarian 1144,
 vegan 606, jain 446. Verified end to end: Dhruti's two old plans show the red banner and refuse
 approval; a fresh vegetarian Gujarati generation came back with 72 dishes and zero animal evidence.
+
+### Dislikes and allergies are matched on the dish, not only its tag (2026-09-30)
+
+**A client who wrote "Soya chunks" as a dislike got Soya Matar Sabzi twice in a week**, plus Tofu
+Bhurji, Tofu Do Pyaza and a tofu pulao across two plans. Two gaps. First, the recipe engine never read
+q36 (dislikes) at all. Only the exchange engine did, and only as an exact food-name match. Second, a
+soy *allergy* would have leaked too: the CSV's Allergen column never tags soy or sesame, so
+`CLIENT_ALLERGEN_LABEL_TO_RECIPE_TAGS` left them unmapped. Before this fix a soy allergy excluded 0
+dishes.
+
+**The rule now** (`recipe-food-avoidance.ts`, same idea as `recipe-animal-content.ts`):
+- **Allergy** (q27 "Allergy — never serve"): a dish is refused if its stored tags OR its name show the
+  allergen. Soy, Sesame and Spicy food are now mapped. At ingestion `seed-recipes.ts` also adds
+  `soy`/`sesame` from the ingredient list, which catches soy sauce and til tempering. That adds 31 soy
+  and 41 sesame dishes, and it takes effect only after `npm run seed:recipes`.
+- **Avoid terms** (q36 dislikes, plus the q27c name of an "Other" food marked Allergy): matched
+  whole-word against the dish **name only**. The matcher knows common synonym families (soya → soya,
+  soybean, nutri, tofu...; lauki → bottle gourd, doodhi...; baingan → brinjal, eggplant...). Anything
+  else matches literally, singular or plural. "Soya" includes tofu. "Tofu" alone excludes only tofu.
+- **Intolerance is still not a filter.** q27's own note says a trigger food is "reduced, timed
+  differently or retested smaller". That is the dietitian's call.
+
+`recipeAvoidanceConflict()` is the one check used by the generation pool, the plausibility re-check,
+the swap/add picker and its server-side write gate, so they cannot disagree. Answers are read live, so
+a correction applies to the next generation or edit. On the real client, "Soya chunks" removes 39 of
+1074 vegetarian dishes, all of them soya or tofu. **Do not go back to `r.allergenTags.some(...)`** at
+any call site: the stored tag alone misses soy.
 
 ### Recipe pool filter — nutritionally-empty rows
 
@@ -2326,6 +2415,34 @@ stores the override in force at generation, and plan edits read that snapshot, n
 Otherwise changing a week's numbers later would re-aim an existing plan's re-balances. Saving does
 not regenerate a plan. THE ONE RULE is untouched: these are dietitian-typed numbers, and no model
 ever proposes them.
+
+## Same food on all days (2026-09-30)
+
+Some clients want one daily routine, not a varied week. The review page's **Meal routine** section
+has two options: *Regular client* (the normal varied plan) or *Same food on all days*. With the
+second, the dietitian picks the dishes for Breakfast, Lunch and Dinner (required) and Mid-morning and
+Evening (optional). They may type an exact quantity for any dish. Generation then builds that one day
+and repeats it on all 7 days (`src/lib/plan/fixed-menu.ts`).
+
+- **Stored per client**, in `client_fixed_menus` (`20260930120000_client_fixed_menus.sql`), not per
+  roadmap, so recomputing the roadmap keeps it. It also applies to week 2 and later until switched
+  back. Switching back keeps the dishes, so switching again restores them.
+- **No model runs.** `generation_mode = 'fixed_menu'` (the check constraint was widened), `model_used`
+  null. The plan page shows a "Same food on all days" note so it is never read as AI output.
+- **THE ONE RULE holds.** A typed quantity is `gramsLocked`. Every other gram comes from
+  `recipe-balancer.ts` against the client's real food target (week override and supplement applied as
+  usual). The route shares one write path, `persistRecipeWeek()`, with the AI path, including the
+  hard diet gate.
+- **Hard rules still apply:** diet type, allergies and dislikes (`fixedMenuRecipeRefusal()`), in the
+  picker, on save, and again at generation against the client's current answers. Generation returns
+  a 422 naming the dish if the answers changed since the menu was saved. Cuisine and season are **not**
+  checked: the dietitian is choosing by hand.
+- **Off target warns, it does not reject.** Every dish is the dietitian's explicit choice, and a retry
+  could not change anything. The review page previews the day's macros against week 1's target
+  before generating, using the same build function. Warnings are stated once, not per day, and
+  variety warnings are left out, since repeating dishes is the point.
+- **Known limit:** an edit on the plan page changes only that one day. To change every day, edit the
+  menu on the review page and generate again. The plan page says so.
 
 ## Meal notes (2026-09-24)
 

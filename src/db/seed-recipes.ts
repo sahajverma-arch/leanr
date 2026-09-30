@@ -21,6 +21,7 @@ import { join } from "node:path"
 import { eq } from "drizzle-orm"
 
 import { classifyRecipeDietTypes } from "@/lib/foods/recipe-diet-classifier"
+import { allergenTagsFromText } from "@/lib/foods/recipe-food-avoidance"
 import { evidenceSafeDietTypes } from "@/lib/foods/recipe-animal-content"
 import { parseCsvRows } from "@/lib/foods/csv-parser"
 import { loadIngredientTextByRecipe, type IngredientTextIndex } from "@/lib/foods/recipe-ingredient-text"
@@ -87,6 +88,13 @@ function buildRecipeValues(
   if (dietClassification.containsFish) allergenTags.add("fish")
   if (dietClassification.containsSeafood) allergenTags.add("seafood")
 
+  const ingredientsText = ingredientText.byId.get(row.recipeId) ?? ingredientText.byName.get(row.name.toLowerCase()) ?? null
+  // The Allergen column never tags soy or sesame. The name and ingredient
+  // list do say it ("Soya Matar Sabzi", "soy sauce", "sesame oil"), so the
+  // tag is taken from there — see recipe-food-avoidance.ts. The runtime
+  // re-applies the name half on every read.
+  for (const tag of allergenTagsFromText(`${row.name} | ${ingredientsText ?? ""}`)) allergenTags.add(tag)
+
   // The Diet Pref column alone is NOT trusted: it labelled real fish, prawn
   // and mutton dishes VEGETARIAN (and VEGAN). The dish's own name, allergen
   // column and ingredient list can each veto a label — see
@@ -94,7 +102,7 @@ function buildRecipeValues(
   const dietTypes = evidenceSafeDietTypes(dietClassification.dietTypes, {
     name: row.name,
     allergenTags: [...allergenTags],
-    ingredientsText: ingredientText.byId.get(row.recipeId) ?? ingredientText.byName.get(row.name.toLowerCase()) ?? null,
+    ingredientsText,
   })
 
   return {

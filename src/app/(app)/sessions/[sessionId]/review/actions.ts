@@ -1,16 +1,25 @@
 "use server"
 
-import { and, eq } from "drizzle-orm"
+import { and, eq, inArray } from "drizzle-orm"
 import { z } from "zod"
 import { revalidatePath } from "next/cache"
 
 import { db } from "@/db"
-import { counsellingSessions, roadmapOverrides, roadmaps, roadmapSupplements, roadmapWeekTargets } from "@/db/schema"
+import { clientFixedMenus, counsellingSessions, recipes, roadmapOverrides, roadmaps, roadmapSupplements, roadmapWeekTargets } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { ENGINE_VERSION, roadmapFor } from "@/lib/counselling/roadmap"
 import { roadmapInputFromAnswers } from "@/lib/counselling/roadmap-input"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
-import { proteinPowderRestriction } from "@/lib/plan/client-profile-from-answers"
+import { compileAvoidTerms } from "@/lib/foods/recipe-food-avoidance"
+import {
+  clientRecipeAllergenTagsFromAnswers,
+  clientRecipeAvoidTermsFromAnswers,
+  dietTypeFromAnswers,
+  proteinPowderRestriction,
+} from "@/lib/plan/client-profile-from-answers"
+import { fixedMenuItemsSchema, fixedMenuProblems, fixedMenuRecipeRefusal, fixedMenuRefusals, type FixedMenuClient } from "@/lib/plan/fixed-menu"
+import { recipeToCandidate, type SwapCandidate } from "@/lib/plan/recipe-candidate"
+import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
 import { SupplementValidationError } from "@/lib/counselling/supplement-adjusted-targets"
 import { assertWeekTargetOverride } from "@/lib/counselling/week-target-override"
 
@@ -205,4 +214,79 @@ export async function clearWeekTargetOverride(roadmapId: string, sessionId: stri
     )
   revalidatePath(`/sessions/${z.string().uuid().parse(sessionId)}/review`)
   revalidatePath("/clients", "layout")
+}
+
+/**
+ * "Same food on all days" — see src/lib/plan/fixed-menu.ts.
+ *
+ * The client's diet type, allergies and dislikes are read LIVE from the
+ * session's answers, the same as every other recipe path: a correction made
+ * after counselling narrows the picker immediately.
+ */
+async function fixedMenuClientFor(sessionId: string): Promise<{ clientId: string; client: FixedMenuClient }> {
+  const [session] = await db
+    .select({ clientId: counsellingSessions.clientId, answers: counsellingSessions.answers })
+    .from(counsellingSessions)
+    .where(eq(counsellingSessions.id, sessionId))
+    .limit(1)
+  if (!session) throw new Error("Session not found")
+  const answers = session.answers as Answers
+  return {
+    clientId: session.clientId,
+    client: {
+      dietType: dietTypeFromAnswers(answers),
+      allergenTags: clientRecipeAllergenTagsFromAnswers(answers),
+      avoidTerms: compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(answers)),
+    },
+  }
+}
+
+/** Every dish this client may be given, from every cuisine — the dietitian is choosing by hand. */
+export async function getFixedMenuCandidates(sessionId: string): Promise<SwapCandidate[]> {
+  await requireStaffUser()
+  const { client } = await fixedMenuClientFor(z.string().uuid().parse(sessionId))
+  const rows = await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(eq(recipes.isActive, true))
+  return rows
+    .filter((r) => fixedMenuRecipeRefusal(r, client) === null)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(recipeToCandidate)
+}
+
+const fixedMenuInputSchema = z.object({
+  sessionId: z.string().uuid(),
+  enabled: z.boolean(),
+  items: fixedMenuItemsSchema,
+})
+
+export type FixedMenuInput = z.input<typeof fixedMenuInputSchema>
+
+/**
+ * Saves the tick and the dishes. Unticking keeps the dishes, so ticking again
+ * restores them. A ticked menu must be complete and servable to this client.
+ * Errors are RETURNED, not thrown: Next.js hides a thrown Server Action
+ * message in production (same reason as setMealNote).
+ */
+export async function saveFixedMenu(input: FixedMenuInput): Promise<{ error: string } | { ok: true }> {
+  const user = await requireStaffUser()
+  const parsed = fixedMenuInputSchema.safeParse(input)
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid fixed menu." }
+  const { sessionId, enabled, items } = parsed.data
+
+  const { clientId, client } = await fixedMenuClientFor(sessionId)
+  if (enabled) {
+    const problems = fixedMenuProblems(items)
+    if (problems.length > 0) return { error: problems.join(" ") }
+    const ids = [...new Set(items.map((i) => i.recipeId))]
+    const rows = await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(inArray(recipes.id, ids))
+    const refusals = fixedMenuRefusals(items, new Map(rows.map((r) => [r.id, r])), client)
+    if (refusals.length > 0) return { error: refusals.join(" ") }
+  }
+
+  await db
+    .insert(clientFixedMenus)
+    .values({ clientId, enabled, items, createdBy: user.id })
+    .onConflictDoUpdate({ target: clientFixedMenus.clientId, set: { enabled, items, updatedAt: new Date() } })
+
+  revalidatePath(`/sessions/${sessionId}/review`)
+  return { ok: true }
 }

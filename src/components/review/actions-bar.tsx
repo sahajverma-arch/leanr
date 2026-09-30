@@ -64,7 +64,9 @@ export function ActionsBar({
         return
       }
       toast.success(
-        `Week 1 plan generated (${data.generationMode === "ai" ? "AI-selected" : "fallback rotation"}, ${data.attempts} attempt${data.attempts === 1 ? "" : "s"}).`
+        data.generationMode === "fixed_menu"
+          ? "Week 1 plan generated from the fixed menu — the same food on all 7 days."
+          : `Week 1 plan generated (${data.generationMode === "ai" ? "AI-selected" : "fallback rotation"}, ${data.attempts} attempt${data.attempts === 1 ? "" : "s"}).`
       )
       router.push(`/plans/${data.dietPlanId}`)
     } catch {

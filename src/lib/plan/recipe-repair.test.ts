@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest"
 
 import { balanceDayToTargets } from "./recipe-balancer"
-import { buildRepairPool, repairDay, repairWeek, worstRelativeDeviation, REPAIR_TARGET_DEVIATION } from "./recipe-repair"
+import { buildRepairPool, enforceVariety, repairDay, repairWeek, worstRelativeDeviation, REPAIR_TARGET_DEVIATION } from "./recipe-repair"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { makeRecipe } from "./test-fixtures"
 import type { DailyRecipeTarget, GroundedRecipeDay, RecipeForPipeline } from "./recipe-types"
-import { MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
+import { findBackToBackRepeats, findVarietyViolations, MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
 
 const constraints: ClientRecipeConstraints = {
   dietType: "vegetarian",
@@ -180,5 +180,51 @@ describe("repairWeek", () => {
     const result = repairWeek(days, target, pool, constraints)
     expect(result.swaps).toEqual([])
     expect(result.days[0].meals[0].items[0].recipe.name).toBe("Only Dish")
+  })
+})
+
+describe("enforceVariety", () => {
+  // Identical macros, so a variety swap is always macro-neutral and the
+  // tests are about which dish is chosen, not about the balancer.
+  const macros = { proteinPer100G: 8, carbsPer100G: 14, fatPer100G: 3, minGrams: 100, maxGrams: 250, idealGrams: 150 }
+  const rajma = makeRecipe({ id: "a-rajma", name: "Rajma Curry", category: "Curry", ...macros })
+  const arhar = makeRecipe({ id: "b-arhar", name: "Arhar Dal", category: "Dal", ...macros })
+  const moong = makeRecipe({ id: "c-moong", name: "Moong Dal", category: "Dal", ...macros })
+  const porridge = makeRecipe({ id: "d-porridge", name: "Oats Porridge", category: "Khichdi", ...macros })
+  const target: DailyRecipeTarget = { kcal: 297, proteinG: 12, carbsG: 21, fatG: 4.5, fiberG: 3 }
+  const week = (recipes: ReturnType<typeof makeRecipe>[]) =>
+    recipes.map((r, dayIndex) => ({ ...makeDay([pipeline(r)], target), dayIndex }))
+
+  it("replaces a dish served on consecutive days with another dal or curry", () => {
+    const pool = buildRepairPool([rajma, arhar, moong, porridge].map(pipeline))
+    const result = enforceVariety(week([rajma, rajma, rajma]), target, pool, constraints)
+    const names = result.days.map((d) => d.meals[0].items[0].recipe.name)
+    expect(findBackToBackRepeats(result.days)).toEqual([])
+    expect(names[0]).toBe("Rajma Curry")
+    expect(names).not.toContain("Oats Porridge")
+    expect(result.swaps.length).toBeGreaterThan(0)
+  })
+
+  it("brings a dish back under its weekly cap", () => {
+    const masoor = makeRecipe({ id: "h-masoor", name: "Masoor Dal", category: "Dal", ...macros })
+    const pool = buildRepairPool([rajma, arhar, moong, masoor].map(pipeline))
+    const result = enforceVariety(week([rajma, arhar, rajma, moong, rajma, arhar, rajma]), target, pool, constraints)
+    expect(findVarietyViolations(result.days)).toEqual([])
+  })
+
+  it("keeps the repeat when the only alternative would wreck the day's macros", () => {
+    const fatty = makeRecipe({ id: "e-fatty", name: "Dal Makhani", category: "Dal", proteinPer100G: 2, carbsPer100G: 4, fatPer100G: 30, minGrams: 100, maxGrams: 110, idealGrams: 100 })
+    const pool = buildRepairPool([rajma, fatty].map(pipeline))
+    const result = enforceVariety(week([rajma, rajma]), target, pool, constraints)
+    expect(result.swaps).toEqual([])
+    expect(result.days[1].meals[0].items[0].recipe.name).toBe("Rajma Curry")
+  })
+
+  it("leaves plain staples alone within their higher cap", () => {
+    const roti = makeRecipe({ id: "f-roti", name: "Roti", category: "Roti", ...macros })
+    const missi = makeRecipe({ id: "g-missi", name: "Missi Roti", category: "Roti", ...macros })
+    const pool = buildRepairPool([roti, missi].map(pipeline))
+    const result = enforceVariety(week([roti, roti, roti, roti]), target, pool, constraints)
+    expect(result.swaps).toEqual([])
   })
 })

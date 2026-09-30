@@ -16,7 +16,8 @@ import { db } from "../../src/db"
 import { clients, counsellingSessions, mealTemplates, recipeAliases, recipes, roadmaps } from "../../src/db/schema"
 import type { Answers } from "../../src/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "../../src/lib/counselling/roadmap"
-import { clientRecipeAllergenTagsFromAnswers, dietTypeFromAnswers } from "../../src/lib/plan/client-profile-from-answers"
+import { clientRecipeAllergenTagsFromAnswers, clientRecipeAvoidTermsFromAnswers, dietTypeFromAnswers } from "../../src/lib/plan/client-profile-from-answers"
+import { compileAvoidTerms, recipeAvoidanceConflict } from "../../src/lib/foods/recipe-food-avoidance"
 import { eligibleCuisinesFor, templateRegionForCuisine, type RecipeCuisine } from "../../src/lib/foods/recipe-cuisine-mapping"
 import { recipeSeasonMatches } from "../../src/lib/foods/recipe-season-mapping"
 import { filterRecipePool } from "../../src/lib/foods/recipe-pool-filters"
@@ -81,11 +82,12 @@ export async function buildRecipeRunContext(
     .from(recipes)
     .where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisines)))
   const clientAllergenTags = clientRecipeAllergenTagsFromAnswers(session.answers as Answers)
+  const avoidTerms = compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(session.answers as Answers))
   const eligible = cuisineRows.filter(
     (r) =>
       isRecipeAllowedForDiet(r, dietType) &&
       recipeSeasonMatches(r.season, season) &&
-      !r.allergenTags.some((t) => clientAllergenTags.includes(t))
+      recipeAvoidanceConflict(r, clientAllergenTags, avoidTerms) === null
   )
   // Same pool filters the production route applies, so a script run stays
   // comparable to a real generation.
@@ -142,7 +144,7 @@ export async function buildRecipeRunContext(
     slots,
     dailyTarget,
     input,
-    constraints: { dietType, eligibleCuisines, allergenTags: clientAllergenTags },
+    constraints: { dietType, eligibleCuisines, allergenTags: clientAllergenTags, avoidTerms },
     index: buildRecipeIndex(filtered, aliasRows),
     poolSize: filtered.length,
   }

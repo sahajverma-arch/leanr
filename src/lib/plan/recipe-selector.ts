@@ -197,9 +197,6 @@ async function runBestOfNPhase(
   n: number,
   onAttempt?: (log: RecipeAttemptLog) => void
 ): Promise<{ days: GroundedRecipeDay[]; generationMode: "ai" | "fallback"; modelUsed: string | null; attempts: number; swaps: RepairSwap[] }> {
-  const messages = buildInitialMessages(input)
-  const promptHash = hashString(JSON.stringify(messages))
-
   // Run the N attempts CONCURRENTLY. They are independent samples of the
   // same prompt, not retries of a failure, so nothing depends on an earlier
   // one — and sequentially they cost N x latency, which blew a real 60s
@@ -212,8 +209,16 @@ async function runBestOfNPhase(
   // fixed set of responses must always rank the same way. attemptWholeWeek()
   // swallows its own failures and returns null, so one bad call cannot
   // reject the batch.
+  //
+  // Each attempt gets its OWN prompt: with a varietySeed set, attempt i sees
+  // its own rotation and table order (recipe-week-rotation.ts). One shared
+  // prompt at temperature 0.3 made the N samples near-copies of one week, so
+  // N bought macro luck but no variety.
   const settled = await Promise.all(
-    Array.from({ length: n }, (_, i) => attemptWholeWeek(input, index, repair, messages, promptHash, i + 1, onAttempt))
+    Array.from({ length: n }, (_, i) => {
+      const messages = buildInitialMessages(input, i + 1)
+      return attemptWholeWeek(input, index, repair, messages, hashString(JSON.stringify(messages)), i + 1, onAttempt)
+    })
   )
   const candidates = settled.filter((week): week is { days: GroundedRecipeDay[]; swaps: RepairSwap[] } => week !== null)
 

@@ -80,6 +80,15 @@ export interface RecipeSelectorInput {
   aliasRows: { recipeId: string; alias: string }[]
   dayIndexOffset?: number
   previousWeekLastDayRecipeNames?: Record<string, string[]>
+  /**
+   * Seeds recipe-week-rotation.ts. Absent = no rotation section and the
+   * table in pool order, byte-identical to before it existed. The route sets
+   * a fresh one per generation, so regenerating gives a different week; each
+   * best-of-N attempt appends its own attempt number, so the N samples differ.
+   */
+  varietySeed?: string
+  /** Every dish in the client's previous week's current plan — softly avoided by the rotation and named in the prompt. */
+  previousWeekRecipes?: { name: string; category: string; mainOrMid: "main" | "mid" }[]
   /** Dietitian Knowledge RAG layer's retrieved chunks (gated by DIETITIAN_KNOWLEDGE_ENABLED) — descriptive prompt text only, never a number. See CLAUDE.md "Dietitian knowledge layer". */
   knowledgeChunks?: RetrievedKnowledgeChunk[]
   /** Diet Plan Examples RAG layer's retrieved examples (gated by DIET_PLAN_EXAMPLES_ENABLED) — descriptive prompt text only, ranked ABOVE knowledgeChunks in the rendered prompt. See CLAUDE.md "Diet plan examples layer". */
@@ -132,7 +141,8 @@ export interface GroundedRecipeSelection {
 
 export interface RecipeSelectionResult {
   selection: GroundedRecipeSelection
-  generationMode: "ai" | "fallback"
+  /** "fixed_menu": the dietitian chose every dish (fixed-menu.ts); no model ran. */
+  generationMode: "ai" | "fallback" | "fixed_menu"
   modelUsed: string | null
   attempts: number
   warnings: string[]

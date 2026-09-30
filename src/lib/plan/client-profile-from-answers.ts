@@ -156,6 +156,23 @@ export function clientRecipeAllergenTagsFromAnswers(answers: Answers): string[] 
   return [...tags]
 }
 
+/**
+ * Free-text foods the recipe engine must keep off this client's plate, matched
+ * against dish names by recipe-food-avoidance.ts: every q36 dislike, plus the
+ * name of an "Other" food (q27c) classified "Allergy — never serve", which
+ * has no fixed tag to map to. Read live from the answers, like the allergen
+ * tags, so a correction takes effect on the next generation or edit.
+ */
+export function clientRecipeAvoidTermsFromAnswers(answers: Answers): string[] {
+  const terms: string[] = []
+  if (typeof answers.q36 === "string" && answers.q36.trim() !== "") terms.push(answers.q36)
+  const reported = answers.q27
+  const otherIsAllergy =
+    Array.isArray(reported) && reported.includes("Other") && answers.q27_other_type === "Allergy — never serve"
+  if (otherIsAllergy && typeof answers.q27c === "string" && answers.q27c.trim() !== "") terms.push(answers.q27c)
+  return terms
+}
+
 /** q36 is free text ("which foods do you dislike"), matched against food names by eligible-foods.ts — best-effort, not a structured vocab. */
 export function clientDislikesFromAnswers(answers: Answers): string[] {
   const raw = answers.q36

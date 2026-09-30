@@ -69,7 +69,7 @@ export interface PlanViewModel {
     status: "draft" | "approved"
     /** Which generation pipeline produced this plan — see CLAUDE.md "The recipe engine". Governs which item table days/meals' children were loaded from, and whether swap/exchange-specific affordances apply. */
     engine: "exchange" | "recipe"
-    generationMode: "ai" | "fallback"
+    generationMode: "ai" | "fallback" | "fixed_menu"
     modelUsed: string | null
     region: string
     dietType: string

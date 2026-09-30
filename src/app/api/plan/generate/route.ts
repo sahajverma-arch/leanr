@@ -7,6 +7,7 @@
  * returns food IDs.
  */
 
+import { randomUUID } from "crypto"
 import { NextResponse } from "next/server"
 import { z } from "zod"
 import { and, eq, gte, inArray, isNull, or } from "drizzle-orm"
@@ -14,6 +15,7 @@ import { and, eq, gte, inArray, isNull, or } from "drizzle-orm"
 import { db } from "@/db"
 import {
   archetypeComponents,
+  clientFixedMenus,
   clients,
   counsellingSessions,
   dietitianKnowledgeChunks,
@@ -49,12 +51,14 @@ import { env } from "@/lib/env"
 import { REGIONS, SEASONS } from "@/lib/foods/vocab"
 import { eligibleCuisinesFor, RECIPE_CUISINES, templateRegionForCuisine, type RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 import { recipeSeasonMatches } from "@/lib/foods/recipe-season-mapping"
+import { compileAvoidTerms, recipeAvoidanceConflict } from "@/lib/foods/recipe-food-avoidance"
 import type { Season } from "@/lib/foods/vocab"
 import {
   ClientProfileError,
   clientAllergensFromAnswers,
   clientDislikesFromAnswers,
   clientRecipeAllergenTagsFromAnswers,
+  clientRecipeAvoidTermsFromAnswers,
   dietTypeFromAnswers,
 } from "@/lib/plan/client-profile-from-answers"
 import { selectArchetypesForWeek, type ArchetypeAssignment, type ArchetypeCandidate } from "@/lib/plan/archetype-selector"
@@ -74,7 +78,16 @@ import { applyEngineDefault, ExchangeEngineDisabledError } from "@/lib/plan/gene
 import { filterRecipePool } from "@/lib/foods/recipe-pool-filters"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
 import type { ClientRecipeConstraints } from "@/lib/plan/recipe-plausibility-validate"
-import type { DailyRecipeTarget, MealSlotInfo, RecipeForPrompt, RecipeSelectorInput } from "@/lib/plan/recipe-types"
+import type { DailyRecipeTarget, MealSlotInfo, RecipeForPrompt, RecipeSelectionResult, RecipeSelectorInput } from "@/lib/plan/recipe-types"
+import {
+  buildFixedMenuDay,
+  FixedMenuError,
+  fixedMenuItemsSchema,
+  fixedMenuRefusals,
+  fixedMenuWarnings,
+  repeatFixedMenuDay,
+  type FixedMenuItem,
+} from "@/lib/plan/fixed-menu"
 import { seasonFor } from "@/lib/plan/season"
 import { sumExchanges, type AchievedMacros, type ExchangeCode, type ExchangeCounts } from "@/lib/plan/table-4-1"
 import {
@@ -260,7 +273,11 @@ async function loadPreviousWeekSeed(
 async function loadPreviousWeekRecipeSeed(
   clientId: string,
   weekNumber: number
-): Promise<{ dayIndexOffset: number; previousWeekLastDayRecipeNames?: Record<string, string[]> }> {
+): Promise<{
+  dayIndexOffset: number
+  previousWeekLastDayRecipeNames?: Record<string, string[]>
+  previousWeekRecipes?: NonNullable<RecipeSelectorInput["previousWeekRecipes"]>
+}> {
   if (weekNumber <= 1) return { dayIndexOffset: 0 }
   const dayIndexOffset = (weekNumber - 1) * 7
 
@@ -273,35 +290,40 @@ async function loadPreviousWeekRecipeSeed(
   )
   if (!previousPlan) return { dayIndexOffset }
 
-  const [lastDay] = await db
-    .select()
-    .from(dietPlanDays)
-    .where(and(eq(dietPlanDays.dietPlanId, previousPlan.id), eq(dietPlanDays.dayIndex, 6)))
-    .limit(1)
-  if (!lastDay) return { dayIndexOffset }
-
-  const mealRows = await db.select().from(dietPlanMeals).where(eq(dietPlanMeals.dietPlanDayId, lastDay.id))
-  if (mealRows.length === 0) return { dayIndexOffset }
-
+  // The WHOLE previous week, not only its last day: avoiding just day 7's
+  // dishes let week 2 re-serve everything from days 1-6. One joined query —
+  // this database is cross-region, so round trips are the cost that matters.
   const itemRows = await db
-    .select({ recipe: recipes, slot: dietPlanMeals.slot })
-    .from(dietPlanRecipeItems)
-    .innerJoin(dietPlanMeals, eq(dietPlanRecipeItems.dietPlanMealId, dietPlanMeals.id))
+    .select({
+      dayIndex: dietPlanDays.dayIndex,
+      slot: dietPlanMeals.slot,
+      name: recipes.name,
+      category: recipes.category,
+      mainOrMid: recipes.mainOrMid,
+    })
+    .from(dietPlanDays)
+    .innerJoin(dietPlanMeals, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
+    .innerJoin(dietPlanRecipeItems, eq(dietPlanRecipeItems.dietPlanMealId, dietPlanMeals.id))
     .innerJoin(recipes, eq(dietPlanRecipeItems.recipeId, recipes.id))
-    .where(
-      inArray(
-        dietPlanRecipeItems.dietPlanMealId,
-        mealRows.map((m) => m.id)
-      )
-    )
+    .where(eq(dietPlanDays.dietPlanId, previousPlan.id))
+  if (itemRows.length === 0) return { dayIndexOffset }
 
   const previousWeekLastDayRecipeNames: Record<string, string[]> = {}
-  for (const row of itemRows) {
+  for (const row of itemRows.filter((r) => r.dayIndex === 6)) {
     const list = previousWeekLastDayRecipeNames[row.slot] ?? []
-    list.push(row.recipe.name)
+    list.push(row.name)
     previousWeekLastDayRecipeNames[row.slot] = list
   }
-  return { dayIndexOffset, previousWeekLastDayRecipeNames }
+  const previousWeekRecipes = itemRows.map((r) => ({
+    name: r.name,
+    category: r.category,
+    mainOrMid: r.mainOrMid === "mid" ? ("mid" as const) : ("main" as const),
+  }))
+  return {
+    dayIndexOffset,
+    previousWeekLastDayRecipeNames: Object.keys(previousWeekLastDayRecipeNames).length > 0 ? previousWeekLastDayRecipeNames : undefined,
+    previousWeekRecipes,
+  }
 }
 
 interface RecipeEngineContext {
@@ -322,6 +344,10 @@ interface RecipeEngineContext {
   targetOverride: WeekTargetOverride | null
   dietType: ReturnType<typeof dietTypeFromAnswers>
   clientRecipeAllergenTags: string[]
+  /** q36 dislikes and a q27 "Other" allergy's name, matched against dish names (recipe-food-avoidance.ts). */
+  clientRecipeAvoidTerms: string[]
+  /** The client's fixed menu when "Same food on all days" is ticked, else null. See fixed-menu.ts. */
+  fixedMenu: FixedMenuItem[] | null
   /** Dietitian Knowledge RAG layer (gated by DIETITIAN_KNOWLEDGE_ENABLED) — empty when off or nothing retrieved. See CLAUDE.md "Dietitian knowledge layer". */
   knowledgeChunks: RetrievedKnowledgeChunk[]
   knowledgeDroppedForBudget: DroppedKnowledgeChunk[]
@@ -363,6 +389,10 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
     console.log(`[plan/generate recipe] ${name}=${phase[name]}ms elapsed=${now - t0}ms`)
   }
 
+  // "Same food on all days": the dietitian chose every dish. No model call,
+  // no pool, no repair — build the one day and repeat it. See fixed-menu.ts.
+  if (ctx.fixedMenu) return generateFixedMenuPlan(ctx, ctx.fixedMenu, { t0, phase, lap })
+
   const eligibleCuisines = eligibleCuisinesFor(ctx.cuisine)
   // Explicit columns, omitting the audit-only rawCsvRow jsonb: it is 46%
   // of a 1.5 MB payload that no runtime path reads, fetched cross-region on
@@ -372,14 +402,21 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
     .from(recipes)
     .where(and(eq(recipes.isActive, true), inArray(recipes.cuisine, eligibleCuisines)))
 
+  const avoidTerms = compileAvoidTerms(ctx.clientRecipeAvoidTerms)
   const eligible = cuisineRows.filter(
     (r) =>
       // NOT r.dietTypes.includes(): the stored label was wrong for real fish
       // dishes. The dish's own name/allergens must agree too.
       isRecipeAllowedForDiet(r, ctx.dietType) &&
       recipeSeasonMatches(r.season, ctx.season) &&
-      !r.allergenTags.some((t) => ctx.clientRecipeAllergenTags.includes(t))
+      // Allergens by name evidence as well as stored tag (the CSV never tags
+      // soy), and the client's own dislikes. See recipe-food-avoidance.ts.
+      recipeAvoidanceConflict(r, ctx.clientRecipeAllergenTags, avoidTerms) === null
   )
+  if (avoidTerms.length > 0) {
+    const excluded = cuisineRows.filter((r) => recipeAvoidanceConflict(r, [], avoidTerms) !== null).map((r) => r.name)
+    console.log(`[plan/generate recipe] avoid terms ${JSON.stringify(avoidTerms.map((t) => t.term))} excluded ${excluded.length}: ${excluded.join(", ")}`)
+  }
   // Drop rows that declare no energy at all, and dishes far fattier than
   // this client's own macro split, before the model ever sees the pool.
   // See recipe-pool-filters.ts for the real rejected week that motivated
@@ -423,7 +460,7 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
       )
     )
 
-  const { dayIndexOffset, previousWeekLastDayRecipeNames } = await loadPreviousWeekRecipeSeed(ctx.clientId, ctx.weekNumber)
+  const { dayIndexOffset, previousWeekLastDayRecipeNames, previousWeekRecipes } = await loadPreviousWeekRecipeSeed(ctx.clientId, ctx.weekNumber)
 
   lap("dbReads")
 
@@ -440,10 +477,15 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
     aliasRows,
     dayIndexOffset,
     previousWeekLastDayRecipeNames,
+    previousWeekRecipes,
+    // Fresh per generation: a different client, a different week, and a
+    // "generate again" each start from a different rotation. See
+    // recipe-week-rotation.ts for the measured sameness this replaces.
+    varietySeed: `${ctx.roadmapId}:${ctx.weekNumber}:${randomUUID()}`,
     knowledgeChunks: ctx.knowledgeChunks,
     dietPlanExamples: ctx.dietPlanExamples,
   }
-  const constraints: ClientRecipeConstraints = { dietType: ctx.dietType, eligibleCuisines, allergenTags: ctx.clientRecipeAllergenTags }
+  const constraints: ClientRecipeConstraints = { dietType: ctx.dietType, eligibleCuisines, allergenTags: ctx.clientRecipeAllergenTags, avoidTerms }
 
   const attempts: RecipeAttemptLog[] = []
   let selectionResult: Awaited<ReturnType<typeof selectRecipes>> | undefined
@@ -520,6 +562,78 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
     )
   }
 
+  return persistRecipeWeek(ctx, selectionResult, runIds, { t0, phase, lap })
+}
+
+/**
+ * The fixed-menu path. Diet, allergy and dislike rules are re-checked against
+ * the client's CURRENT answers (they may have changed since the menu was
+ * saved) and refuse with a 422 naming the dish — never silently dropped.
+ * Being off target does not refuse: see fixedMenuWarnings().
+ */
+async function generateFixedMenuPlan(
+  ctx: RecipeEngineContext,
+  items: FixedMenuItem[],
+  timing: RecipeTiming
+): Promise<NextResponse> {
+  const ids = [...new Set(items.map((i) => i.recipeId))]
+  const rows = ids.length ? await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(inArray(recipes.id, ids)) : []
+  const recipesById = new Map(rows.map((r) => [r.id, r]))
+  const avoidTerms = compileAvoidTerms(ctx.clientRecipeAvoidTerms)
+  const client = { dietType: ctx.dietType, allergenTags: ctx.clientRecipeAllergenTags, avoidTerms }
+
+  const refusals = fixedMenuRefusals(items, recipesById, client)
+  if (refusals.length > 0) {
+    return NextResponse.json(
+      { error: `The fixed menu cannot be served to this client. Change it on the review page. ${refusals.join(" ")}`, dayProblems: refusals },
+      { status: 422 }
+    )
+  }
+
+  let day
+  try {
+    day = buildFixedMenuDay(items, recipesById, ctx.slots, ctx.dailyTarget)
+  } catch (err) {
+    if (err instanceof FixedMenuError) return NextResponse.json({ error: err.message }, { status: 422 })
+    throw err
+  }
+  timing.lap("fixedMenu")
+
+  // Every cuisine is eligible: the dietitian picked these dishes by hand.
+  const constraints: ClientRecipeConstraints = {
+    dietType: ctx.dietType,
+    eligibleCuisines: [...RECIPE_CUISINES],
+    allergenTags: ctx.clientRecipeAllergenTags,
+    avoidTerms,
+  }
+  const selectionResult: RecipeSelectionResult = {
+    selection: { days: repeatFixedMenuDay(day) },
+    generationMode: "fixed_menu",
+    modelUsed: null,
+    attempts: 0,
+    warnings: fixedMenuWarnings(day, ctx.dailyTarget, constraints),
+    repairSwaps: [],
+  }
+  return persistRecipeWeek(ctx, selectionResult, [], timing)
+}
+
+interface RecipeTiming {
+  t0: number
+  phase: Record<string, number>
+  lap: (name: string) => void
+}
+
+/**
+ * Everything after a week has been chosen: the hard diet gate, then the plan
+ * write. Shared by the model path and the fixed-menu path (fixed-menu.ts) so
+ * the two cannot drift apart on what is checked or how a week is saved.
+ */
+async function persistRecipeWeek(
+  ctx: RecipeEngineContext,
+  selectionResult: RecipeSelectionResult,
+  runIds: string[],
+  { t0, phase, lap }: RecipeTiming
+): Promise<NextResponse> {
   const days = selectionResult.selection.days
 
   // HARD diet gate, independent of every earlier filter: nothing that is not
@@ -863,6 +977,9 @@ export async function POST(request: Request) {
     }
     const slots: MealSlotInfo[] = slotRows.map((r) => ({ slot: r.slot, slotOrder: r.slotOrder, timeHint: r.timeHint }))
     const clientRecipeAllergenTags = clientRecipeAllergenTagsFromAnswers(session.answers as Answers)
+    const clientRecipeAvoidTerms = clientRecipeAvoidTermsFromAnswers(session.answers as Answers)
+    const [fixedMenuRow] = await db.select().from(clientFixedMenus).where(eq(clientFixedMenus.clientId, client.id)).limit(1)
+    const fixedMenu = fixedMenuRow?.enabled ? fixedMenuItemsSchema.parse(fixedMenuRow.items) : null
     const dailyRecipeTarget: DailyRecipeTarget = {
       kcal: dailyTarget.kcal,
       proteinG: dailyTarget.proteinG,
@@ -981,6 +1098,8 @@ export async function POST(request: Request) {
       dailyTarget: dailyRecipeTarget,
       dietType,
       clientRecipeAllergenTags,
+      clientRecipeAvoidTerms,
+      fixedMenu,
       knowledgeChunks,
       knowledgeDroppedForBudget,
       dietPlanExamples,

@@ -78,9 +78,10 @@ export function normalizeRecipeAllergenTags(rawAllergen: string): RecipeAllergen
  * itself — it's folded onto a recipe's allergen_tags at ingestion time from
  * classifyRecipeDietTypes()'s containsEgg flag instead (see
  * seed-recipes.ts), the actually-reliable signal for egg content. "Soy" and
- * "Sesame" have no real row in this CSV's Allergen column at all — left
- * unmapped rather than guessed; a client with a declared soy/sesame allergy
- * gets no recipe-side exclusion in v1, a real (small) gap, not a silent one.
+ * "Sesame" have no row in this CSV's Allergen column at all, so their tags
+ * come from the dish's own evidence instead — its name at runtime and its
+ * ingredient list at ingestion (recipe-food-avoidance.ts). Until 2026-09-30
+ * they were unmapped, and a declared soy allergy excluded nothing.
  */
 export const CLIENT_ALLERGEN_LABEL_TO_RECIPE_TAGS: Record<string, string[]> = {
   Milk: ["lactose"],
@@ -94,4 +95,7 @@ export const CLIENT_ALLERGEN_LABEL_TO_RECIPE_TAGS: Record<string, string[]> = {
   "Tree nuts": ["nut"],
   Onion: ["onion_garlic"],
   Garlic: ["onion_garlic"],
+  Soy: ["soy"],
+  Sesame: ["sesame"],
+  "Spicy food": ["spicy_food"],
 }

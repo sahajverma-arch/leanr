@@ -11,6 +11,7 @@ import type { RetrievedDietPlanExample } from "./diet-plan-example-retrieval"
 import type { RetrievedKnowledgeChunk } from "./knowledge-retrieval"
 import { formatSlotStructureRules } from "./recipe-meal-structure"
 import type { DailyRecipeTarget, GroundedRecipeDay, RecipeForPrompt, RecipeSelectorInput } from "./recipe-types"
+import { buildWeekRotation, formatRotationSection, recentDishNames, seededShuffle } from "./recipe-week-rotation"
 
 export const SYSTEM_PROMPT = `You are an expert Indian dietitian composing a realistic weekly meal plan for a client.
 
@@ -24,7 +25,7 @@ Rules:
 - PROTEIN IS THE TARGET THAT GETS MISSED, every time, and it is missed LOW. A normal-looking Indian day of roti, rice, sabzi, fruit and tea lands well under the protein target while overshooting carbs — measured repeatedly, not hypothetical. Every lunch and dinner must include at least one genuinely protein-dense dish (dal, chana, rajma, sprouts, paneer, tofu, soya, egg, curd, chicken or fish — read the Protein/100g column and prefer the higher numbers), and breakfast should usually include one too. Cereals, vegetables and fruit cannot reach the protein total no matter how much of them is served, so do not rely on them for it.
 - If a choice is between two otherwise-equally-realistic dishes, take the one with more protein per 100g and less carbohydrate per 100g. Carbs are the easiest macro to overshoot: rice, roti, paratha, poha, upma and potato add up faster than they look.
 - The day's targets are a whole-day total across every meal, not just one meal — a day built mostly from light snacks and beverages will fall far short of EVERY target even if each individual item looks reasonable. Weigh a lunch/dinner choice by how much it actually contributes toward the day's total, not just whether it's a plausible thing to eat.
-- Avoid using the same recipe more than twice across the 7 days — vary the week the way a real household would.
+- VARIETY: vary the week the way a real household would. A dish (a dal, curry, sabzi, paratha, chilla or snack) at most twice in 7 days, never on two days in a row, and never at both lunch and dinner on the same day. A plain roti or rice, curd, salad, chutney or chaas at most 4 times — rotate between the different rotis and rices in the table. Rotate the protein dish through the whole range of dals and curries (arhar, moong, masoor, urad, chana dal, mixed dal, dal palak, kadhi, rajma, chole, paneer, soya...), not the same two or three. Code checks all of this and replaces repeats, so a varied week keeps more of your choices.
 - Commonality is a tie-breaker between otherwise-similar choices, not a reason to fill every meal with the simplest, most common snack or drink — hitting the day's calorie/macro totals with a substantial lunch and dinner matters more than commonality.
 - You may be given a short "Dietitian guidance" section for this client's region and goal — treat it as an experienced Indian dietitian's real judgment about realistic combinations, alongside (never instead of) the recipe table and targets above.
 - You may also be given "Real example day(s)" — actual complete days built by real dietitians for a similar client. These carry MORE weight than the general Dietitian guidance bullets above: when an example's specific structure conflicts with a general guidance bullet, follow the example. Neither ever overrides the recipe table or the numeric daily targets.
@@ -86,7 +87,7 @@ const REGIONAL_MEAL_PATTERNS: Record<string, string> = {
   Gujarati:
     "A Gujarati home lunch is rotli (roti) + dal + bhaat (rice) + a simple shaak (vegetable sabzi — lauki, bhindi, tindora, cabbage, brinjal, potato), often with kadhi and chaas. Dinner is lighter: khichdi with kadhi, or thepla/bhakri with shaak. Breakfast and evening are farsan and flatbreads: thepla, dhokla, khandvi, handvo, muthiya, khakhra.",
   "North Indian":
-    "A North Indian home lunch/dinner is roti or paratha + dal (or rajma/chole) + a sabzi, with rice sometimes and raita or salad. Breakfast is paratha, poha, chilla or dalia.",
+    "A North Indian home lunch/dinner is roti (plain, missi, bajra, jowar or multigrain) or rice + a dal or curry + a sabzi, with raita, curd or salad. The dal changes through the week — arhar, moong, masoor, urad, chana dal, dal palak, kadhi, rajma, chole — and so does the sabzi. Breakfast rotates between parathas, chillas, poha, upma, dalia and oats.",
   Punjabi:
     "A Punjabi home lunch/dinner is roti or paratha + dal (dal makhani, rajma, chole) + a sabzi, with lassi, curd or raita. Breakfast is paratha with curd.",
   Rajasthani:
@@ -159,7 +160,28 @@ export interface PromptMessage {
   content: string
 }
 
-export function buildInitialMessages(input: RecipeSelectorInput): PromptMessage[] {
+/**
+ * The table order and rotation for one attempt. Without a varietySeed both
+ * are exactly as before this existed (pool order, no rotation section).
+ */
+function varietyForAttempt(input: RecipeSelectorInput, attemptNumber: number): { table: RecipeForPrompt[]; rotationSection: string } {
+  if (!input.varietySeed) return { table: input.eligibleRecipesForPrompt, rotationSection: "" }
+  const seed = `${input.varietySeed}:${attemptNumber}`
+  const recent = input.previousWeekRecipes ?? []
+  const rotation = buildWeekRotation(input.eligibleRecipesForPrompt, {
+    seed,
+    cuisine: input.cuisine,
+    recentRecipeNames: recent.map((r) => r.name),
+  })
+  return {
+    // Shuffled so no dish wins just by sitting near the top of a ~1000-row table.
+    table: seededShuffle(input.eligibleRecipesForPrompt, `${seed}:table`),
+    rotationSection: formatRotationSection(rotation, recentDishNames(recent)),
+  }
+}
+
+export function buildInitialMessages(input: RecipeSelectorInput, attemptNumber = 1): PromptMessage[] {
+  const { table, rotationSection } = varietyForAttempt(input, attemptNumber)
   const slotsLine = input.slots.map((s) => `${s.slot}${s.timeHint ? ` (${s.timeHint})` : ""}`).join(", ")
   const previousDayNote = input.previousWeekLastDayRecipeNames
     ? `\nAvoid repeating these recipes from the previous week's final day where possible: ${Object.values(input.previousWeekLastDayRecipeNames).flat().join(", ")}.`
@@ -170,8 +192,8 @@ Meal slots, in order: ${slotsLine}.
 Daily targets (average across the week): ${formatDailyTarget(input.dailyTarget)}.${previousDayNote}
 ${formatSlotStructureRules(input.slots.map((s) => s.slot))}
 Available recipes (choose ONLY from this list, copying the Name column EXACTLY):
-${formatRecipeTable(input.eligibleRecipesForPrompt)}
-${formatRegionalSection(input.cuisine, input.eligibleRecipesForPrompt)}${formatKnowledgeSection(input.knowledgeChunks)}
+${formatRecipeTable(table)}
+${formatRegionalSection(input.cuisine, input.eligibleRecipesForPrompt)}${rotationSection}${formatKnowledgeSection(input.knowledgeChunks)}
 ${formatExamplesSection(input.dietPlanExamples)}
 Compose a full 7-day plan (dayIndex 0 through 6). For each day, assign recipes to every meal slot listed above.
 
@@ -185,6 +207,8 @@ ${buildFullWeekSchemaExample()}`
 }
 
 export function buildDayRetryMessages(input: RecipeSelectorInput, day: GroundedRecipeDay, diagnoses: string[]): PromptMessage[] {
+  // Day retries only exist on the retry path, whose whole-week call is attempt 1 — same rotation, so the redo fits the rest of the week.
+  const { table, rotationSection } = varietyForAttempt(input, 1)
   const slotsLine = input.slots.map((s) => s.slot).join(", ")
   const currentDayDescription = day.meals
     .map((m) => `  ${m.slot}: ${m.items.map((i) => i.recipe.name).join(", ") || "(empty)"}`)
@@ -200,8 +224,8 @@ Daily targets: ${formatDailyTarget(input.dailyTarget)}
 Meal slots, in order: ${slotsLine}.
 ${formatSlotStructureRules(input.slots.map((s) => s.slot))}
 Available recipes (choose ONLY from this list, copying the Name column EXACTLY):
-${formatRecipeTable(input.eligibleRecipesForPrompt)}
-${formatRegionalSection(input.cuisine, input.eligibleRecipesForPrompt)}${formatKnowledgeSection(input.knowledgeChunks)}
+${formatRecipeTable(table)}
+${formatRegionalSection(input.cuisine, input.eligibleRecipesForPrompt)}${rotationSection}${formatKnowledgeSection(input.knowledgeChunks)}
 ${formatExamplesSection(input.dietPlanExamples)}
 Choose DIFFERENT recipes for day ${day.dayIndex} that address the problems above — a different dish, not a different amount (you never specify amounts).
 
