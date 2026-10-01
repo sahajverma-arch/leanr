@@ -106,6 +106,13 @@ export interface PlanViewModel {
    * answers changed since, shows it. A plan with any cannot be approved.
    */
   dietViolations: string[]
+  /**
+   * Weekday/cultural food rules from the counselling form that code cannot
+   * check (a fasting grain rule, "Other", Halal...) or that are incomplete
+   * (days ticked with nothing avoided). Live from the answers, like
+   * dietViolations. See day-food-rules.ts.
+   */
+  dayRuleNotes: string[]
   /** One line describing the prescribed supplement, or null. Snapshotted on the plan, never a live lookup. */
   supplementLine: string | null
   days: PlanViewDay[]
@@ -178,6 +185,10 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
   // every downstream consumer (meal grouping, quantity formatting,
   // guidelines) is unaware of which engine produced a given plan.
   const itemsByMealId = new Map<string, PlanViewItem[]>()
+  // Each meal's calendar date, so a weekday rule ("no non-veg on Monday") is
+  // checked against the day the dish actually sits on.
+  const dateByDayId = new Map(dayRows.map((d) => [d.id, d.date]))
+  const dateByMealId = new Map(mealRows.map((m) => [m.id, dateByDayId.get(m.dietPlanDayId)]))
   const dietViolations = new Set<string>()
   const flag = (name: string, violation: string | null) => {
     if (violation) dietViolations.add(`${name} — ${violation}`)
@@ -196,7 +207,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
           )
       : []
     for (const { item, recipe } of recipeItemRows) {
-      flag(recipe.name, recipeRuleViolation(recipe, foodRules))
+      flag(recipe.name, recipeRuleViolation(recipe, foodRules, dateByMealId.get(item.dietPlanMealId)))
       const list = itemsByMealId.get(item.dietPlanMealId) ?? []
       list.push(recipeItemToPlanViewItem(item, recipe))
       itemsByMealId.set(item.dietPlanMealId, list)
@@ -215,7 +226,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
           )
       : []
     for (const { item, food } of itemRows) {
-      flag(food.nameEn, foodRuleViolation(food, foodRules))
+      flag(food.nameEn, foodRuleViolation(food, foodRules, dateByMealId.get(item.dietPlanMealId)))
       const exchangeType = item.exchangeType as ExchangeCode
       const macros = TABLE_4_1[exchangeType]
       const list = itemsByMealId.get(item.dietPlanMealId) ?? []
@@ -475,6 +486,10 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
     deviationPct,
     warnings: (plan.warnings as string[] | null) ?? [],
     dietViolations: [...dietViolations],
+    dayRuleNotes: [
+      ...(foodRules.dayRules.incomplete ? [foodRules.dayRules.incomplete] : []),
+      ...foodRules.dayRules.unchecked.map((u) => `Not checked automatically — check this plan by hand: ${u}`),
+    ],
     supplementLine: plan.supplement ? describeSupplement(plan.supplement as PrescribedSupplement) : null,
     days,
     weeklySummary,

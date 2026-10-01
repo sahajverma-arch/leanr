@@ -1,7 +1,8 @@
 /**
  * Audits EVERY saved diet plan, both engines, against its client's CURRENT
  * counselling answers: diet type (by the dish's own evidence), declared
- * allergies, and dislikes — the same rule the plan page's red banner and
+ * allergies, dislikes and weekday food rules ("no non-veg on Monday", checked
+ * against each day's real date) — the same rule the plan page's red banner and
  * approval use (src/lib/plan/client-food-rules.ts). Read-only; never writes.
  *
  *   npx tsx --env-file=.env.local scripts/audit-plan-client-rules.ts
@@ -38,7 +39,7 @@ async function main() {
   const planIds = plans.map((p) => p.plan.id)
   const recipeRows = planIds.length
     ? await db
-        .select({ planId: dietPlanDays.dietPlanId, dayIndex: dietPlanDays.dayIndex, slot: dietPlanMeals.slot, name: recipes.name, dietTypes: recipes.dietTypes, allergenTags: recipes.allergenTags })
+        .select({ planId: dietPlanDays.dietPlanId, dayIndex: dietPlanDays.dayIndex, date: dietPlanDays.date, slot: dietPlanMeals.slot, name: recipes.name, dietTypes: recipes.dietTypes, allergenTags: recipes.allergenTags })
         .from(dietPlanRecipeItems)
         .innerJoin(dietPlanMeals, eq(dietPlanRecipeItems.dietPlanMealId, dietPlanMeals.id))
         .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
@@ -47,7 +48,7 @@ async function main() {
     : []
   const foodRows = planIds.length
     ? await db
-        .select({ planId: dietPlanDays.dietPlanId, dayIndex: dietPlanDays.dayIndex, slot: dietPlanMeals.slot, nameEn: foods.nameEn, dietTypes: foods.dietTypes, allergens: foods.allergens })
+        .select({ planId: dietPlanDays.dietPlanId, dayIndex: dietPlanDays.dayIndex, date: dietPlanDays.date, slot: dietPlanMeals.slot, nameEn: foods.nameEn, dietTypes: foods.dietTypes, allergens: foods.allergens })
         .from(dietPlanItems)
         .innerJoin(dietPlanMeals, eq(dietPlanItems.dietPlanMealId, dietPlanMeals.id))
         .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
@@ -57,7 +58,7 @@ async function main() {
 
   let flagged = 0
   let approvedFlagged = 0
-  const byKind = { diet: 0, allergy: 0, dislike: 0 }
+  const byKind = { diet: 0, allergy: 0, dislike: 0, weekday: 0 }
   for (const { plan, clientName, answers } of plans.sort((a, b) => +a.plan.createdAt - +b.plan.createdAt)) {
     const rules = clientFoodRules(answers as Answers, plan.dietType)
     const hits = new Map<string, { reason: string; where: string[] }>()
@@ -67,8 +68,8 @@ async function main() {
       h.where.push(`d${dayIndex + 1} ${slot}`)
       hits.set(name, h)
     }
-    for (const r of recipeRows.filter((x) => x.planId === plan.id)) record(r.name, recipeRuleViolation(r, rules), r.dayIndex, r.slot)
-    for (const f of foodRows.filter((x) => x.planId === plan.id)) record(f.nameEn, foodRuleViolation(f, rules), f.dayIndex, f.slot)
+    for (const r of recipeRows.filter((x) => x.planId === plan.id)) record(r.name, recipeRuleViolation(r, rules, r.date), r.dayIndex, r.slot)
+    for (const f of foodRows.filter((x) => x.planId === plan.id)) record(f.nameEn, foodRuleViolation(f, rules, f.date), f.dayIndex, f.slot)
     if (hits.size === 0) continue
 
     flagged++
@@ -77,10 +78,11 @@ async function main() {
     console.log(
       `\n${plan.status.toUpperCase()} ${plan.engine} plan ${plan.id} — ${clientName}, week ${plan.weekNumber}, ${plan.dietType}, created ${plan.createdAt.toISOString().slice(0, 10)}`
     )
-    console.log(`  answers: diet=${JSON.stringify(a.q33 ?? null)} allergies=${JSON.stringify(a.q27 ?? null)} dislikes=${JSON.stringify(a.q36 ?? null)}`)
+    console.log(`  answers: diet=${JSON.stringify(a.q33 ?? null)} allergies=${JSON.stringify(a.q27 ?? null)} dislikes=${JSON.stringify(a.q36 ?? null)} dayRules=${JSON.stringify({ q38: a.q38 ?? null, days: a.q38a ?? null, avoid: a.q38b ?? null })}`)
     for (const [name, { reason, where }] of hits) {
       console.log(`  - ${name}: ${reason}  [${where.join(", ")}]`)
       if (reason.startsWith("not suitable")) byKind.diet++
+      else if (/this client (has no|has none|does not eat)/.test(reason)) byKind.weekday++
       else if (reason.includes("allergen")) byKind.allergy++
       else byKind.dislike++
     }
@@ -95,7 +97,7 @@ async function main() {
       `${new Set(clientsWithAvoid.map((p) => p.plan.clientId)).size} clients have a dislike or allergy/intolerance recorded ===`
   )
   console.log(`Plans with food the client must not have: ${flagged} (${approvedFlagged} APPROVED)`)
-  console.log(`Distinct problem dishes per plan — diet: ${byKind.diet}, allergy: ${byKind.allergy}, dislike: ${byKind.dislike}`)
+  console.log(`Distinct problem dishes per plan — diet: ${byKind.diet}, allergy: ${byKind.allergy}, dislike: ${byKind.dislike}, weekday rule: ${byKind.weekday}`)
   process.exit(0)
 }
 

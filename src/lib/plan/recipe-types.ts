@@ -4,6 +4,7 @@ import { recipes } from "@/db/schema"
 import type { Recipe } from "@/db/schema"
 import type { RecipeCuisine } from "@/lib/foods/recipe-cuisine-mapping"
 
+import type { DayRestriction } from "./day-food-rules"
 import type { RetrievedDietPlanExample } from "./diet-plan-example-retrieval"
 import type { DietType } from "./exchange-solver"
 import type { RetrievedKnowledgeChunk } from "./knowledge-retrieval"
@@ -93,6 +94,12 @@ export interface RecipeSelectorInput {
   knowledgeChunks?: RetrievedKnowledgeChunk[]
   /** Diet Plan Examples RAG layer's retrieved examples (gated by DIET_PLAN_EXAMPLES_ENABLED) — descriptive prompt text only, ranked ABOVE knowledgeChunks in the rendered prompt. See CLAUDE.md "Diet plan examples layer". */
   dietPlanExamples?: RetrievedDietPlanExample[]
+  /**
+   * Weekday food rules for this week, keyed by dayIndex (day-food-rules.ts).
+   * Named in the prompt; enforced in code by recipe-repair.ts
+   * enforceDayRules() and the route's write gate, never by the prompt alone.
+   */
+  dayRestrictions?: ReadonlyMap<number, DayRestriction>
 }
 
 // LLM-selected (name only, no grams ever)

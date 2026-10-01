@@ -11,6 +11,7 @@ import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-catego
 import { DAL_BUCKET, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MAX_SABZI_PER_MEAL, MEAT_CONFLICTING_BUCKETS, STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { isMustHaveSatisfied } from "./recipe-pairing"
 import type { GroundedRecipeDay } from "./recipe-types"
+import { recipeDayRuleViolation, type DayRestriction } from "./day-food-rules"
 import { isExtraMealSlot } from "./extra-meal-slots"
 
 export interface ClientRecipeConstraints {
@@ -19,6 +20,13 @@ export interface ClientRecipeConstraints {
   allergenTags: string[]
   /** Compiled q36 dislikes / "Other" allergy names (recipe-food-avoidance.ts). Omitted = none. */
   avoidTerms?: CompiledAvoidTerm[]
+  /**
+   * Weekday rules for THIS plan week, keyed by dayIndex (day-food-rules.ts
+   * restrictionsForWeek()). Omitted = none. A dish breaking one is a
+   * problem like any other, so no repair or variety swap can ever put
+   * chicken back onto a no-non-veg day.
+   */
+  dayRestrictions?: ReadonlyMap<number, DayRestriction>
 }
 
 // A meal may never stack more than one of these together — the same
@@ -49,6 +57,7 @@ const NO_MAIN_REQUIRED_SLOTS = new Set(["wake_up", "mid_morning", "evening", "be
 
 export function describePlausibilityProblems(day: GroundedRecipeDay, constraints: ClientRecipeConstraints): string[] {
   const problems: string[] = []
+  const dayRestriction = constraints.dayRestrictions?.get(day.dayIndex)
 
   for (const meal of day.meals) {
     if (meal.items.length === 0) {
@@ -133,6 +142,10 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
       const avoidance = recipeAvoidanceConflict(item.recipe, constraints.allergenTags, constraints.avoidTerms ?? [])
       if (avoidance) {
         problems.push(`${meal.slot}'s "${item.recipe.name}" ${avoidance}`)
+      }
+      if (dayRestriction) {
+        const dayRule = recipeDayRuleViolation(item.recipe, dayRestriction.avoids, dayRestriction.weekday)
+        if (dayRule) problems.push(`${meal.slot}'s "${item.recipe.name}" is not allowed: ${dayRule}`)
       }
     }
 

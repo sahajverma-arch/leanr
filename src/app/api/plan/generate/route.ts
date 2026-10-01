@@ -45,6 +45,14 @@ import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
 import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
 import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { recipeDietViolations } from "@/lib/plan/recipe-diet-gate"
+import {
+  dayFoodRulesFromAnswers,
+  describeAvoids,
+  recipeDayRuleViolation,
+  restrictionsForWeek,
+  type DayFoodRules,
+  type DayRestriction,
+} from "@/lib/plan/day-food-rules"
 import { applyWeekTargetOverride, WeekTargetValidationError, type WeekTargetOverride } from "@/lib/counselling/week-target-override"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { env } from "@/lib/env"
@@ -347,6 +355,13 @@ interface RecipeEngineContext {
   clientRecipeAllergenTags: string[]
   /** q36 dislikes and a q27 "Other" allergy's name, matched against dish names (recipe-food-avoidance.ts). */
   clientRecipeAvoidTerms: string[]
+  /**
+   * Weekday food rules for THIS week ("no non-veg or eggs on Monday"),
+   * keyed by dayIndex. See day-food-rules.ts. Empty map = none.
+   */
+  dayRestrictions: Map<number, DayRestriction>
+  /** The same rules by weekday, for the fixed menu (served on every day). */
+  dayRules: DayFoodRules
   /** The client's fixed menu when "Same food on all days" is ticked, else null. See fixed-menu.ts. */
   fixedMenu: FixedMenuItem[] | null
   /**
@@ -491,8 +506,15 @@ async function generateRecipeEnginePlan(ctx: RecipeEngineContext): Promise<NextR
     varietySeed: `${ctx.roadmapId}:${ctx.weekNumber}:${randomUUID()}`,
     knowledgeChunks: ctx.knowledgeChunks,
     dietPlanExamples: ctx.dietPlanExamples,
+    dayRestrictions: ctx.dayRestrictions,
   }
-  const constraints: ClientRecipeConstraints = { dietType: ctx.dietType, eligibleCuisines, allergenTags: ctx.clientRecipeAllergenTags, avoidTerms }
+  const constraints: ClientRecipeConstraints = {
+    dietType: ctx.dietType,
+    eligibleCuisines,
+    allergenTags: ctx.clientRecipeAllergenTags,
+    avoidTerms,
+    dayRestrictions: ctx.dayRestrictions,
+  }
 
   const attempts: RecipeAttemptLog[] = []
   let selectionResult: Awaited<ReturnType<typeof selectRecipes>> | undefined
@@ -587,7 +609,7 @@ async function generateFixedMenuPlan(
   const rows = ids.length ? await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(inArray(recipes.id, ids)) : []
   const recipesById = new Map(rows.map((r) => [r.id, r]))
   const avoidTerms = compileAvoidTerms(ctx.clientRecipeAvoidTerms)
-  const client = { dietType: ctx.dietType, allergenTags: ctx.clientRecipeAllergenTags, avoidTerms }
+  const client = { dietType: ctx.dietType, allergenTags: ctx.clientRecipeAllergenTags, avoidTerms, dayRules: ctx.dayRules }
 
   const refusals = fixedMenuRefusals(items, recipesById, client)
   if (refusals.length > 0) {
@@ -612,6 +634,7 @@ async function generateFixedMenuPlan(
     eligibleCuisines: [...RECIPE_CUISINES],
     allergenTags: ctx.clientRecipeAllergenTags,
     avoidTerms,
+    dayRestrictions: ctx.dayRestrictions,
   }
   const selectionResult: RecipeSelectionResult = {
     selection: { days: repeatFixedMenuDay(day) },
@@ -677,6 +700,32 @@ async function persistRecipeWeek(
       {
         error: "This week was rejected: it contained food this client must not have. Nothing was saved. Please generate again.",
         dayProblems: avoidanceViolations,
+      },
+      { status: 422 }
+    )
+  }
+
+  // Same hard stop for a weekday food rule ("no non-veg or eggs on Monday").
+  // The model is told, and recipe-repair.ts enforceDayRules() swaps out
+  // anything that slips through, so this should never fire. It exists
+  // because the rule was once on the counselling form with nothing reading
+  // it, and a client got chicken on their no-non-veg day. See day-food-rules.ts.
+  const dayRuleViolations = days.flatMap((day) => {
+    const restriction = ctx.dayRestrictions.get(day.dayIndex)
+    if (!restriction) return []
+    return day.meals.flatMap((meal) =>
+      meal.items.flatMap((item) => {
+        const v = recipeDayRuleViolation(item.recipe, restriction.avoids, restriction.weekday)
+        return v ? [`${restriction.weekday} ${meal.slot}: "${item.recipe.name}" ${v}`] : []
+      })
+    )
+  })
+  if (dayRuleViolations.length > 0) {
+    console.error(`[plan/generate recipe] DAY RULE GATE REJECTED week: ${dayRuleViolations.join(" | ")}`)
+    return NextResponse.json(
+      {
+        error: "This week was rejected: it broke one of the client's weekday food rules. Nothing was saved. Please generate again.",
+        dayProblems: dayRuleViolations,
       },
       { status: 422 }
     )
@@ -1015,6 +1064,16 @@ export async function POST(request: Request) {
     const slots: MealSlotInfo[] = slotRows.map((r) => ({ slot: r.slot, slotOrder: r.slotOrder, timeHint: r.timeHint }))
     const clientRecipeAllergenTags = clientRecipeAllergenTagsFromAnswers(session.answers as Answers)
     const clientRecipeAvoidTerms = clientRecipeAvoidTermsFromAnswers(session.answers as Answers)
+    // Weekday rules ("no non-veg or eggs on Monday"), matched to this week's
+    // real dates. An incomplete answer refuses rather than guessing the days.
+    const dayRules = dayFoodRulesFromAnswers(session.answers as Answers)
+    if (dayRules.incomplete) return NextResponse.json({ error: dayRules.incomplete }, { status: 422 })
+    const dayRestrictions = restrictionsForWeek(dayRules, toIsoDate(weekStartDate))
+    if (dayRestrictions.size > 0) {
+      console.log(
+        `[plan/generate recipe] weekday rules: ${[...dayRestrictions.entries()].map(([i, r]) => `d${i} ${r.weekday}: no ${describeAvoids(r.avoids)}`).join(" | ")}`
+      )
+    }
     const [fixedMenuRow] = await db.select().from(clientFixedMenus).where(eq(clientFixedMenus.clientId, client.id)).limit(1)
     const fixedMenu = fixedMenuRow?.enabled ? fixedMenuItemsSchema.parse(fixedMenuRow.items) : null
     // Never passed to the model: only written as empty meals (extra-meal-slots.ts).
@@ -1138,6 +1197,8 @@ export async function POST(request: Request) {
       dietType,
       clientRecipeAllergenTags,
       clientRecipeAvoidTerms,
+      dayRestrictions,
+      dayRules,
       fixedMenu,
       extraSlots,
       knowledgeChunks,

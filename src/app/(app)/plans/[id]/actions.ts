@@ -10,6 +10,8 @@ import type { Answers } from "@/lib/counselling/questions"
 import { requireStaffUser } from "@/lib/counselling/require-staff-user"
 import { clientAllergensFromAnswers, clientDislikesFromAnswers } from "@/lib/plan/client-profile-from-answers"
 import { clientFoodRules, foodRuleViolation, recipeRuleViolation } from "@/lib/plan/client-food-rules"
+import { dateLabel } from "@/lib/plan/plan-guidelines"
+import { dayFoodRulesFromAnswers, foodDayRuleViolationOnDate } from "@/lib/plan/day-food-rules"
 import { filterEligibleFoods, type EligibilityCriteria } from "@/lib/plan/eligible-foods"
 import {
   assertEditable,
@@ -57,7 +59,7 @@ const uuidSchema = z.string().uuid()
  */
 async function loadItemContext(itemId: string) {
   const [row] = await db
-    .select({ item: dietPlanItems, meal: dietPlanMeals, plan: dietPlans })
+    .select({ item: dietPlanItems, meal: dietPlanMeals, day: dietPlanDays, plan: dietPlans })
     .from(dietPlanItems)
     .innerJoin(dietPlanMeals, eq(dietPlanItems.dietPlanMealId, dietPlanMeals.id))
     .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
@@ -79,7 +81,7 @@ async function loadItemContext(itemId: string) {
     clientDislikes: clientDislikesFromAnswers(answers),
   }
 
-  return { ...row, criteria }
+  return { ...row, criteria, dayRules: dayFoodRulesFromAnswers(answers) }
 }
 
 // Moved to lib so the review page's fixed-menu picker builds the same rows.
@@ -95,7 +97,9 @@ export async function getSwapCandidates(itemId: string): Promise<SwapCandidate[]
   if (!ctx) return recipeSwapCandidates(itemId)
 
   const sameType = await db.select().from(foods).where(eq(foods.exchangeType, ctx.item.exchangeType))
-  const eligible = filterEligibleFoods(sameType, ctx.criteria).filter((f) => f.mealSlots.includes(ctx.meal.slot))
+  const eligible = filterEligibleFoods(sameType, ctx.criteria).filter(
+    (f) => f.mealSlots.includes(ctx.meal.slot) && foodDayRuleViolationOnDate(f, ctx.dayRules, ctx.day.date) === null
+  )
 
   return eligible
     .filter((f) => f.id !== ctx.item.foodId)
@@ -132,6 +136,8 @@ export async function swapPlanItem(itemId: string, newFoodId: string): Promise<v
   if (eligible.length === 0 || !newFood.mealSlots.includes(ctx.meal.slot)) {
     throw new SwapValidationError(`${newFood.nameEn} is not eligible for this client at ${ctx.meal.slot}.`)
   }
+  const dayViolation = foodDayRuleViolationOnDate(newFood, ctx.dayRules, ctx.day.date)
+  if (dayViolation) throw new SwapValidationError(`${newFood.nameEn} cannot go on ${dateLabel(ctx.day.date)}: ${dayViolation}.`)
 
   // Exchange count never changes on a swap — same exchange type, same count,
   // only the food identity and its resulting gram weight change. Macros are
@@ -183,27 +189,27 @@ export async function approvePlan(planId: string): Promise<void> {
   const forbidden = new Set<string>()
   if (plan.engine === "recipe") {
     const items = await db
-      .select({ name: recipes.name, dietTypes: recipes.dietTypes, allergenTags: recipes.allergenTags })
+      .select({ name: recipes.name, dietTypes: recipes.dietTypes, allergenTags: recipes.allergenTags, date: dietPlanDays.date })
       .from(dietPlanRecipeItems)
       .innerJoin(dietPlanMeals, eq(dietPlanRecipeItems.dietPlanMealId, dietPlanMeals.id))
       .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
       .innerJoin(recipes, eq(dietPlanRecipeItems.recipeId, recipes.id))
       .where(eq(dietPlanDays.dietPlanId, planId))
     for (const r of items) {
-      const v = recipeRuleViolation(r, rules)
-      if (v) forbidden.add(`${r.name} (${v})`)
+      const v = recipeRuleViolation(r, rules, r.date)
+      if (v) forbidden.add(`${r.name} on ${dateLabel(r.date)} (${v})`)
     }
   } else {
     const items = await db
-      .select({ nameEn: foods.nameEn, dietTypes: foods.dietTypes, allergens: foods.allergens })
+      .select({ nameEn: foods.nameEn, dietTypes: foods.dietTypes, allergens: foods.allergens, date: dietPlanDays.date })
       .from(dietPlanItems)
       .innerJoin(dietPlanMeals, eq(dietPlanItems.dietPlanMealId, dietPlanMeals.id))
       .innerJoin(dietPlanDays, eq(dietPlanMeals.dietPlanDayId, dietPlanDays.id))
       .innerJoin(foods, eq(dietPlanItems.foodId, foods.id))
       .where(eq(dietPlanDays.dietPlanId, planId))
     for (const f of items) {
-      const v = foodRuleViolation(f, rules)
-      if (v) forbidden.add(`${f.nameEn} (${v})`)
+      const v = foodRuleViolation(f, rules, f.date)
+      if (v) forbidden.add(`${f.nameEn} on ${dateLabel(f.date)} (${v})`)
     }
   }
   if (forbidden.size > 0) {
@@ -236,7 +242,7 @@ async function recipeSwapCandidates(itemId: string): Promise<SwapCandidate[]> {
   const loaded = await loadRecipeItemContext(itemId)
   if (!loaded) return []
 
-  const pool = await eligibleRecipesForPlan(loaded.ctx)
+  const pool = await eligibleRecipesForPlan(loaded.ctx, loaded.day.date)
   return pool
     .filter((r) => r.id !== loaded.item.recipeId)
     .map(toCandidate)
@@ -250,7 +256,7 @@ async function performRecipeSwap(itemId: string, newRecipeId: string): Promise<s
 
   const [newRecipe] = await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(eq(recipes.id, newRecipeId)).limit(1)
   if (!newRecipe) throw new PlanEditError("Recipe not found.")
-  assertRecipeAllowed(newRecipe, loaded.ctx)
+  assertRecipeAllowed(newRecipe, loaded.ctx, loaded.day.date)
 
   await db.transaction(async (tx) => {
     // Substitute the recipe, snapshotting macros from the row as it is today
@@ -473,7 +479,7 @@ export async function getAddItemCandidates(mealId: string): Promise<SwapCandidat
     .where(eq(dietPlanRecipeItems.dietPlanMealId, mealId))
   const alreadyHere = new Set(existing.map((e) => e.recipeId))
 
-  const pool = await eligibleRecipesForPlan(loaded.ctx)
+  const pool = await eligibleRecipesForPlan(loaded.ctx, loaded.day.date)
   return pool
     .filter((r) => !alreadyHere.has(r.id))
     .map(toCandidate)
@@ -500,7 +506,7 @@ export async function addPlanItem(mealId: string, recipeId: string): Promise<voi
 
   const [recipe] = await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(eq(recipes.id, recipeId)).limit(1)
   if (!recipe) throw new PlanEditError("Recipe not found.")
-  assertRecipeAllowed(recipe, loaded.ctx)
+  assertRecipeAllowed(recipe, loaded.ctx, loaded.day.date)
 
   const [duplicate] = await db
     .select({ id: dietPlanRecipeItems.id })

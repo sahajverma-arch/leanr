@@ -35,6 +35,7 @@
 
 import { isAnimalProteinRecipe } from "@/lib/foods/recipe-animal-content"
 
+import { recipeDayRuleViolation } from "./day-food-rules"
 import { balanceDayToTargets } from "./recipe-balancer"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
 import { MAX_SABZI_PER_MEAL, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
@@ -157,6 +158,20 @@ export function buildRepairPool(pool: Iterable<RecipeForPipeline>, clientCuisine
   return { byBucket, regionalByBucket, byFamily }
 }
 
+/**
+ * Whether a recipe may go onto this day under the client's weekday food rule
+ * ("no non-veg or eggs on Monday"). Every swap pass filters its candidates
+ * with this — NOT only through the plausibility-problem count, because a
+ * swap that fixes one problem while breaking the weekday rule leaves that
+ * count unchanged and would be accepted. Measured: a real Monday got
+ * "Coriander Chutney -> Fish Tikka" exactly that way before this filter.
+ */
+function allowedOnDay(constraints: ClientRecipeConstraints, dayIndex: number): (recipe: RecipeForPipeline) => boolean {
+  const restriction = constraints.dayRestrictions?.get(dayIndex)
+  if (!restriction) return () => true
+  return (recipe) => recipeDayRuleViolation(recipe, restriction.avoids, restriction.weekday) === null
+}
+
 function regionalRecipeIds(pool: RepairPool): Set<string> {
   return new Set([...pool.regionalByBucket.values()].flat().map((r) => r.id))
 }
@@ -258,12 +273,17 @@ export function repairDay(
   constraints: ClientRecipeConstraints,
   weeklyCounts: Map<string, number>
 ): { day: GroundedRecipeDay; swaps: RepairSwap[] } {
-  const swaps: RepairSwap[] = []
-  if (day.meals.some((meal) => meal.items.some((item) => item.gramsLocked))) return { day, swaps }
+  // Weekday food rules first, and not macro-gated: a hard rule like an
+  // allergy. Every later swap below checks it again through
+  // describePlausibilityProblems(), so none can put the dish back.
+  const ruled = enforceDayRules(day, target, pool, constraints, weeklyCounts)
+  const swaps: RepairSwap[] = [...ruled.swaps]
+  if (ruled.day.meals.some((meal) => meal.items.some((item) => item.gramsLocked))) return { day: ruled.day, swaps }
 
-  let current = day
+  let current = ruled.day
   let currentScore = worstRelativeDeviation(current.totals, target)
   const regionalIds = regionalRecipeIds(pool)
+  const allowedToday = allowedOnDay(constraints, day.dayIndex)
 
   for (let round = 0; round < MAX_SWAPS_PER_DAY; round++) {
     if (currentScore <= REPAIR_TARGET_DEVIATION) break
@@ -315,6 +335,7 @@ export function repairDay(
 
         for (const recipe of alternatives) {
           if (recipe.id === item.recipe.id) continue
+          if (!allowedToday(recipe)) continue
           // A duplicate recipe inside one meal is a plausibility problem in
           // its own right — keep it out of the picker rather than offering
           // it and then rejecting it downstream.
@@ -416,6 +437,7 @@ function ensureRegionalDish(
   if (day.meals.some((meal) => meal.items.some((item) => item.gramsLocked))) return { day, swaps }
 
   const regionalIds = regionalRecipeIds(pool)
+  const allowedToday = allowedOnDay(constraints, day.dayIndex)
   const regionalCount = (d: GroundedRecipeDay) =>
     d.meals.reduce((n, meal) => n + meal.items.filter((item) => regionalIds.has(item.recipe.id)).length, 0)
 
@@ -444,7 +466,7 @@ function ensureRegionalDish(
           fatG: dayTotals.fatG - own.fatG,
         }
         for (const recipe of alternatives) {
-          if (namesInMeal.has(recipe.name)) continue
+          if (namesInMeal.has(recipe.name) || !allowedToday(recipe)) continue
           if ((weeklyCounts.get(recipe.name) ?? 0) >= repeatCapFor(recipe)) continue
           candidates.push({ mealIndex, itemIndex, recipe, estimate: bestAchievableWorst(othersTotals, recipe, target) })
         }
@@ -548,6 +570,106 @@ export function enforceSingleSabzi(
   return { day: current, swaps }
 }
 
+/** RepairSwap.to for a dish taken off a restricted day because nothing allowed could replace it. */
+export const REMOVED_FOR_DAY_RULE = "(removed: weekday food rule)"
+
+/**
+ * Takes every dish that breaks this day's weekday rule ("no non-veg or eggs
+ * on Monday" — day-food-rules.ts) off the plate.
+ *
+ * WHY HERE. The pool the model chooses from is one pool for the whole week,
+ * so a non-vegetarian client's Monday is offered chicken like every other
+ * day. The prompt names the restricted days, but a prompt rule is not a
+ * guarantee; this is. It runs inside repairDay(), which both generation
+ * paths (best-of-N and the per-day retry) go through.
+ *
+ * Each offending dish is replaced by an allowed dish of the same
+ * varietyFamily() if one exists (an egg breakfast for a veg breakfast of the
+ * same kind), else of the same category bucket, choosing the fewest
+ * plausibility problems and then the best macro fit after re-balancing.
+ * If nothing allowed exists, the dish is removed and the day re-balanced.
+ * Mandatory: unlike a variety swap, it is never refused for costing macros.
+ */
+export function enforceDayRules(
+  day: GroundedRecipeDay,
+  target: DailyRecipeTarget,
+  pool: RepairPool,
+  constraints: ClientRecipeConstraints,
+  weeklyCounts: Map<string, number>
+): { day: GroundedRecipeDay; swaps: RepairSwap[] } {
+  const swaps: RepairSwap[] = []
+  const restriction = constraints.dayRestrictions?.get(day.dayIndex)
+  if (!restriction) return { day, swaps }
+  const allowedToday = allowedOnDay(constraints, day.dayIndex)
+
+  let current = day
+  // Each pass removes one offending dish, so this ends; the bound is a guard.
+  for (let pass = 0; pass < 50; pass++) {
+    let at: { mealIndex: number; itemIndex: number } | null = null
+    for (let mealIndex = 0; mealIndex < current.meals.length && !at; mealIndex++) {
+      const itemIndex = current.meals[mealIndex].items.findIndex((item) => !allowedToday(item.recipe))
+      if (itemIndex >= 0) at = { mealIndex, itemIndex }
+    }
+    if (!at) break
+
+    const meal = current.meals[at.mealIndex]
+    const item = meal.items[at.itemIndex]
+    const namesInMeal = new Set(meal.items.map((i) => i.recipe.name))
+    const own = contributionOf(item)
+    const othersTotals: MacroTotals = {
+      kcal: current.totals.kcal - own.kcal,
+      proteinG: current.totals.proteinG - own.proteinG,
+      carbsG: current.totals.carbsG - own.carbsG,
+      fatG: current.totals.fatG - own.fatG,
+    }
+
+    const seen = new Set<string>()
+    const candidates: { recipe: RecipeForPipeline; sameFamily: boolean; estimate: number }[] = []
+    const sources: [RecipeForPipeline[], boolean][] = [
+      [pool.byFamily.get(varietyFamily(item.recipe)) ?? [], true],
+      [pool.byBucket.get(recipeCategoryBucket(item.recipe.category, item.recipe.name)) ?? [], false],
+    ]
+    for (const [list, sameFamily] of sources) {
+      for (const recipe of list) {
+        if (seen.has(recipe.id)) continue
+        seen.add(recipe.id)
+        if (!allowedToday(recipe) || namesInMeal.has(recipe.name)) continue
+        if ((weeklyCounts.get(recipe.name) ?? 0) >= repeatCapFor(recipe)) continue
+        candidates.push({ recipe, sameFamily, estimate: bestAchievableWorst(othersTotals, recipe, target) })
+      }
+    }
+    candidates.sort((a, b) => Number(b.sameFamily) - Number(a.sameFamily) || a.estimate - b.estimate || (a.recipe.id < b.recipe.id ? -1 : 1))
+
+    let best: { day: GroundedRecipeDay; problems: number; sameFamily: boolean; score: number; to: string } | null = null
+    for (const candidate of candidates.slice(0, MAX_FULL_EVALUATIONS_PER_ROUND)) {
+      const rebalanced = balanceDayToTargets(replaceItem(current, at.mealIndex, at.itemIndex, candidate.recipe), target)
+      const problems = describePlausibilityProblems(rebalanced, constraints).length
+      const score = worstRelativeDeviation(rebalanced.totals, target)
+      const better =
+        best === null ||
+        problems < best.problems ||
+        (problems === best.problems && candidate.sameFamily && !best.sameFamily) ||
+        (problems === best.problems && candidate.sameFamily === best.sameFamily && score < best.score)
+      if (better) best = { day: rebalanced, problems, sameFamily: candidate.sameFamily, score, to: candidate.recipe.name }
+    }
+    if (best === null) {
+      best = {
+        day: balanceDayToTargets(removeItem(current, at.mealIndex, at.itemIndex), target),
+        problems: 0,
+        sameFamily: false,
+        score: 0,
+        to: REMOVED_FOR_DAY_RULE,
+      }
+    }
+
+    weeklyCounts.set(item.recipe.name, Math.max(0, (weeklyCounts.get(item.recipe.name) ?? 1) - 1))
+    if (best.to !== REMOVED_FOR_DAY_RULE) weeklyCounts.set(best.to, (weeklyCounts.get(best.to) ?? 0) + 1)
+    swaps.push({ dayIndex: current.dayIndex, slot: meal.slot, from: item.recipe.name, to: best.to })
+    current = best.day
+  }
+  return { day: current, swaps }
+}
+
 /** RepairSwap.to for a sabzi taken off the plate rather than replaced. */
 export const REMOVED_EXTRA_SABZI = "(removed: one sabzi per meal)"
 
@@ -607,7 +729,17 @@ export function repairWeek(
     return result.day
   })
   const varied = enforceVariety(repaired, target, pool, constraints)
-  return { days: varied.days, swaps: [...swaps, ...varied.swaps] }
+  // Last word to the weekday rule. Every pass above already filters its
+  // candidates by it, so this is normally a no-op; it is here so a future
+  // pass that forgets cannot put chicken back on a no-non-veg day.
+  const finalSwaps: RepairSwap[] = []
+  const finalCounts = countWeeklyRecipeUse(varied.days)
+  const finalDays = varied.days.map((d) => {
+    const ruled = enforceDayRules(d, target, pool, constraints, finalCounts)
+    finalSwaps.push(...ruled.swaps)
+    return ruled.day
+  })
+  return { days: finalDays, swaps: [...swaps, ...varied.swaps, ...finalSwaps] }
 }
 
 /**
@@ -718,9 +850,11 @@ export function enforceVariety(
     }
 
     const mustStayRegional = regionalIds.has(item.recipe.id)
+    const allowedToday = allowedOnDay(constraints, day.dayIndex)
     const candidates = (pool.byFamily.get(varietyFamily(item.recipe)) ?? [])
       .filter((recipe) => {
         if (recipe.id === item.recipe.id || namesInMeal.has(recipe.name)) return false
+        if (!allowedToday(recipe)) return false
         if (mustStayRegional && !regionalIds.has(recipe.id)) return false
         if ((weeklyCounts.get(recipe.name) ?? 0) >= repeatCapFor(recipe)) return false
         if (!isEverydayStaple(recipe) && nearby.has(recipe.id)) return false

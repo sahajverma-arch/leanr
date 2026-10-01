@@ -12,6 +12,8 @@
  *   - declared allergies ("Allergy — never serve"), by stored tag or name
  *     evidence (recipe-food-avoidance.ts),
  *   - dislikes (q36) and an "Other" allergy's name, matched on the dish name.
+ *   - weekday rules (q38/q38a/q38b: "no non-veg or eggs on Monday"), checked
+ *     only when the caller passes the day's date (day-food-rules.ts).
  *
  * Pure functions, zero I/O.
  */
@@ -26,6 +28,7 @@ import {
   clientRecipeAvoidTermsFromAnswers,
   dietTypeFromAnswers,
 } from "./client-profile-from-answers"
+import { dayFoodRulesFromAnswers, foodDayRuleViolationOnDate, recipeDayRuleViolationOnDate, type DayFoodRules } from "./day-food-rules"
 
 export interface ClientFoodRules {
   /** Every diet type the dish must satisfy — the plan's own, plus the live answer when it differs. */
@@ -35,6 +38,8 @@ export interface ClientFoodRules {
   /** Exchange-engine allergen vocabulary (foods.allergens). */
   foodAllergens: string[]
   avoidTerms: CompiledAvoidTerm[]
+  /** Weekday rules, by calendar weekday. */
+  dayRules: DayFoodRules
 }
 
 export function clientFoodRules(answers: Answers, planDietType: string | null): ClientFoodRules {
@@ -50,23 +55,32 @@ export function clientFoodRules(answers: Answers, planDietType: string | null): 
     recipeAllergenTags: clientRecipeAllergenTagsFromAnswers(answers),
     foodAllergens: clientAllergensFromAnswers(answers),
     avoidTerms: compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(answers)),
+    dayRules: dayFoodRulesFromAnswers(answers),
   }
 }
 
-/** Why this recipe must not be on this client's plan, or null if it may. */
+/**
+ * Why this recipe must not be on this client's plan, or null if it may.
+ * Pass `isoDate` (the plan day's date) whenever the dish sits on, or is
+ * going onto, a specific day — without it the weekday rules are not checked.
+ */
 export function recipeRuleViolation(
   recipe: { name: string; dietTypes: readonly string[]; allergenTags: readonly string[] },
-  rules: ClientFoodRules
+  rules: ClientFoodRules,
+  isoDate?: string
 ): string | null {
   const wrongDiet = rules.dietTypes.find((d) => !isRecipeAllowedForDiet(recipe, d))
   if (wrongDiet) return `not suitable for a ${wrongDiet.replace("_", "-")} client`
-  return recipeAvoidanceConflict(recipe, rules.recipeAllergenTags, rules.avoidTerms)
+  const conflict = recipeAvoidanceConflict(recipe, rules.recipeAllergenTags, rules.avoidTerms)
+  if (conflict) return conflict
+  return isoDate ? recipeDayRuleViolationOnDate(recipe, rules.dayRules, isoDate) : null
 }
 
 /** The same rules for an exchange-engine food row. */
 export function foodRuleViolation(
   food: { nameEn: string; dietTypes: readonly string[]; allergens: readonly string[] },
-  rules: ClientFoodRules
+  rules: ClientFoodRules,
+  isoDate?: string
 ): string | null {
   const wrongDiet = rules.dietTypes.find((d) => !food.dietTypes.includes(d))
   if (wrongDiet) return `not suitable for a ${wrongDiet.replace("_", "-")} client`
@@ -74,5 +88,5 @@ export function foodRuleViolation(
   if (allergen) return `contains ${allergen}, a declared allergen`
   const avoided = rules.avoidTerms.find(({ re }) => re.test(food.nameEn))
   if (avoided) return `matches "${avoided.term}", which this client avoids`
-  return null
+  return isoDate ? foodDayRuleViolationOnDate(food, rules.dayRules, isoDate) : null
 }

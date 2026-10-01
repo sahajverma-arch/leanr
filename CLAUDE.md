@@ -1499,6 +1499,37 @@ re-measured by replaying the production balance + `repairWeek()` over the same d
 passing 26 -> 27; days within ±8% 188 -> 188 (192 with the range fix alone; the 2-roti floor costs
 those 4).
 
+### Weekday food rules are enforced (2026-10-01)
+
+**A non-vegetarian client marked "no non-veg or eggs on Monday" got Chicken Kathi Roll, Prawns Salad and
+Egg Rice + Green Chilli Chicken on Monday in three drafts in a row.** The counselling form asked q38/q38a/
+q38b and told the counsellor "these day rules are enforced per weekday in the generated plan", but **no
+code read those answers at all**. Now `day-food-rules.ts` reads them, and they are a hard rule like an
+allergy:
+- A rule is matched by the day's **real calendar date** (UTC weekday of `diet_plan_days.date`), never its
+  position: a week can start on a Thursday, so Monday is dayIndex 4.
+- q38b → forbidden: "Non-vegetarian food" = meat/fish; "Eggs"; "Onion & garlic" (tag or name); "All
+  animal products" = not confirmed vegan (so dairy too). The q38 option "No non-vegetarian food on
+  selected days" forbids meat/fish even if q38b was not ticked to match. q38 "No egg"/"No beef"/"No pork"
+  apply to every day. Day answers are ignored when q38 is "No restriction" (the form hides them then).
+- Something avoided with no days ticked, or days with nothing avoided, **refuses generation** (422) rather
+  than guessing. A fasting grain rule, "Other", Halal, Kosher and q38c text cannot be checked: the plan
+  page lists them in an amber "check by hand" box.
+
+**Enforced at every layer:** the prompt names the restricted days; `enforceDayRules()` runs first in
+`repairDay()` and swaps each forbidden dish for an allowed one of the same `varietyFamily()` (else bucket,
+else removes it); every other repair/regional/variety swap filters candidates with `allowedOnDay()`;
+`repairWeek()` re-runs it last; a hard write gate in `persistRecipeWeek()`; swap/add pickers and their
+server re-check (`recipeRuleViolation(recipe, rules, isoDate)` — pass the date or weekday rules are not
+checked); the exchange swap; the plan page's red banner; approval; the fixed menu (a dish breaking ANY
+weekday's rule is refused, since it repeats every day); `audit-plan-client-rules.ts`.
+
+**Do not rely on the plausibility-problem COUNT to keep a hard rule.** Replaying a real plan, macro repair
+swapped Coriander Chutney (a must-have problem) for Fish Tikka on Monday: one problem out, one in, count
+level, accepted. That is why every swap pass filters candidates directly. Tested in
+`day-food-rules.test.ts`. Replayed on Avik's three real weeks: 0 forbidden dishes on Monday, every week
+still passes the weekly gate.
+
 ### Dislikes and allergies are matched on the dish, not only its tag (2026-09-30)
 
 **A client who wrote "Soya chunks" as a dislike got Soya Matar Sabzi twice in a week**, plus Tofu

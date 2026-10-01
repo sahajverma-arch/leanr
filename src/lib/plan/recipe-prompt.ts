@@ -7,6 +7,7 @@
  * "Output ONLY recipe names. Never calculate calories, macros, or grams.").
  */
 
+import { describeAvoids, type DayRestriction } from "./day-food-rules"
 import type { RetrievedDietPlanExample } from "./diet-plan-example-retrieval"
 import type { RetrievedKnowledgeChunk } from "./knowledge-retrieval"
 import { formatSlotStructureRules } from "./recipe-meal-structure"
@@ -180,6 +181,22 @@ function varietyForAttempt(input: RecipeSelectorInput, attemptNumber: number): {
   }
 }
 
+/**
+ * The client's weekday food rules, one line per restricted day. Empty when
+ * there are none, so the prompt is byte-identical to before for every other
+ * client. Advisory for the model: recipe-repair.ts enforceDayRules() and the
+ * route's write gate are what guarantee it.
+ */
+export function formatDayRestrictionsSection(restrictions: ReadonlyMap<number, DayRestriction> | undefined, onlyDayIndex?: number): string {
+  if (!restrictions || restrictions.size === 0) return ""
+  const lines = [...restrictions.entries()]
+    .filter(([dayIndex]) => onlyDayIndex === undefined || dayIndex === onlyDayIndex)
+    .sort(([a], [b]) => a - b)
+    .map(([dayIndex, r]) => `- dayIndex ${dayIndex} (${r.weekday}): no ${describeAvoids(r.avoids)} in ANY meal that day`)
+  if (lines.length === 0) return ""
+  return `\nWeekday food rules (hard rules from the client's counselling — never break them):\n${lines.join("\n")}\n`
+}
+
 export function buildInitialMessages(input: RecipeSelectorInput, attemptNumber = 1): PromptMessage[] {
   const { table, rotationSection } = varietyForAttempt(input, attemptNumber)
   const slotsLine = input.slots.map((s) => `${s.slot}${s.timeHint ? ` (${s.timeHint})` : ""}`).join(", ")
@@ -189,7 +206,7 @@ export function buildInitialMessages(input: RecipeSelectorInput, attemptNumber =
 
   const userContent = `Client profile: diet type "${input.dietType}", cuisine "${input.cuisine}", ${input.mealCount} meals/day.
 Meal slots, in order: ${slotsLine}.
-Daily targets (average across the week): ${formatDailyTarget(input.dailyTarget)}.${previousDayNote}
+Daily targets (average across the week): ${formatDailyTarget(input.dailyTarget)}.${previousDayNote}${formatDayRestrictionsSection(input.dayRestrictions)}
 ${formatSlotStructureRules(input.slots.map((s) => s.slot))}
 Available recipes (choose ONLY from this list, copying the Name column EXACTLY):
 ${formatRecipeTable(table)}
@@ -220,7 +237,7 @@ ${currentDayDescription}
 Problems:
 ${diagnoses.map((d) => `- ${d}`).join("\n")}
 
-Daily targets: ${formatDailyTarget(input.dailyTarget)}
+Daily targets: ${formatDailyTarget(input.dailyTarget)}${formatDayRestrictionsSection(input.dayRestrictions, day.dayIndex)}
 Meal slots, in order: ${slotsLine}.
 ${formatSlotStructureRules(input.slots.map((s) => s.slot))}
 Available recipes (choose ONLY from this list, copying the Name column EXACTLY):

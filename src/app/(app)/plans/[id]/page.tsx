@@ -29,6 +29,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
     deviationPct,
     warnings,
     dietViolations,
+    dayRuleNotes,
     supplementLine,
     days,
     weeklySummary,
@@ -73,9 +74,26 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
             ))}
           </ul>
           <p className="mt-2 text-sm">
-            Checked against the client&apos;s current counselling answers (diet type, allergies and dislikes). Swap each
-            one out or regenerate the plan. It cannot be approved until they are gone.
+            Checked against the client&apos;s current counselling answers (diet type, allergies, dislikes and weekday
+            food rules such as &ldquo;no non-veg on Monday&rdquo;). Swap each one out or regenerate the plan. It cannot be
+            approved until they are gone.
           </p>
+        </div>
+      )}
+
+      {/* Food rules from the counselling form that code cannot check (a
+          fasting grain rule, "Other", Halal) or that are incomplete — the
+          dietitian has to check these by hand. */}
+      {dayRuleNotes.length > 0 && (
+        <div className="rounded-xl border-2 border-amber-500 bg-amber-50 p-4 text-amber-950 print:hidden">
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Food rules from counselling to check by hand</h2>
+          <ul className="mt-2 space-y-1 text-sm">
+            {dayRuleNotes.map((n) => (
+              <li key={n} className="leading-snug">
+                • {n}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

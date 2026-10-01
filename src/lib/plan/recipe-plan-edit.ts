@@ -39,6 +39,7 @@ import { eligibleCuisinesFor, type RecipeCuisine } from "@/lib/foods/recipe-cuis
 import { recipeSeasonMatches } from "@/lib/foods/recipe-season-mapping"
 import type { Season } from "@/lib/foods/vocab"
 import { clientFoodRules, recipeRuleViolation, type ClientFoodRules } from "@/lib/plan/client-food-rules"
+import { restrictionsForWeek } from "@/lib/plan/day-food-rules"
 import type { CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { deviationOf, rebalanceDay, weeklyAverageOf, type StoredRecipeMeal } from "./recipe-swap"
@@ -118,7 +119,13 @@ async function contextForPlan(plan: typeof dietPlans.$inferSelect): Promise<Reci
     avoidTerms,
     rules,
     season: seasonFor(plan.weekStart, cuisine),
-    constraints: { dietType: plan.dietType, eligibleCuisines: eligibleCuisinesFor(cuisine), allergenTags, avoidTerms },
+    constraints: {
+      dietType: plan.dietType,
+      eligibleCuisines: eligibleCuisinesFor(cuisine),
+      allergenTags,
+      avoidTerms,
+      dayRestrictions: restrictionsForWeek(rules.dayRules, plan.weekStart),
+    },
   }
 }
 
@@ -167,7 +174,7 @@ export function assertEditable(ctx: RecipePlanContext): void {
  * (recipe-pool-filters.ts). Eligibility is re-checked server-side on the
  * write too, never trusted from whatever the picker last showed.
  */
-export async function eligibleRecipesForPlan(ctx: RecipePlanContext): Promise<RecipeForPipeline[]> {
+export async function eligibleRecipesForPlan(ctx: RecipePlanContext, isoDate: string): Promise<RecipeForPipeline[]> {
   const rows = await db
     .select(RECIPE_PIPELINE_COLUMNS)
     .from(recipes)
@@ -175,17 +182,19 @@ export async function eligibleRecipesForPlan(ctx: RecipePlanContext): Promise<Re
 
   return rows.filter(
     (r) =>
-      recipeRuleViolation(r, ctx.rules) === null &&
+      // isoDate: the day being edited, for weekday rules ("no non-veg on Monday").
+      recipeRuleViolation(r, ctx.rules, isoDate) === null &&
       recipeSeasonMatches(r.season, ctx.season) &&
       r.kcalPer100G > 0
   )
 }
 
 /** The same checks eligibleRecipesForPlan applies, as a hard gate on one chosen recipe. Message names the real reason. */
-export function assertRecipeAllowed(recipe: RecipeForPipeline, ctx: RecipePlanContext): void {
-  // Diet (the plan's AND the client's current answer), allergies and
-  // dislikes. Re-checked here, never trusted from what the picker showed.
-  const violation = recipeRuleViolation(recipe, ctx.rules)
+export function assertRecipeAllowed(recipe: RecipeForPipeline, ctx: RecipePlanContext, isoDate: string): void {
+  // Diet (the plan's AND the client's current answer), allergies, dislikes
+  // and this day's weekday rules. Re-checked here, never trusted from what
+  // the picker showed.
+  const violation = recipeRuleViolation(recipe, ctx.rules, isoDate)
   if (violation) {
     throw new PlanEditError(`${recipe.name} cannot be added: ${violation}.`)
   }

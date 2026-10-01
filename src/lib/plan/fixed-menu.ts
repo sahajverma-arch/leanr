@@ -25,6 +25,7 @@ import { z } from "zod"
 import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { recipeAvoidanceConflict, type CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
 
+import { recipeDayRuleViolation, WEEKDAY_NAMES, type DayFoodRules } from "./day-food-rules"
 import { balanceDayToTargets } from "./recipe-balancer"
 import { computeMealsTotals } from "./recipe-grounding"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
@@ -156,6 +157,12 @@ export interface FixedMenuClient {
   dietType: string
   allergenTags: readonly string[]
   avoidTerms: readonly CompiledAvoidTerm[]
+  /**
+   * Weekday food rules ("no non-veg on Monday"). A fixed menu is served on
+   * every day, so a dish breaking ANY weekday's rule cannot go on it.
+   * Omitted = none.
+   */
+  dayRules?: DayFoodRules
 }
 
 /**
@@ -176,6 +183,11 @@ export function fixedMenuRecipeRefusal(
   if (!isRecipeAllowedForDiet(recipe, client.dietType)) return `${recipe.name} is not suitable for a ${client.dietType} client.`
   const avoidance = recipeAvoidanceConflict(recipe, client.allergenTags, client.avoidTerms)
   if (avoidance) return `${recipe.name} ${avoidance}.`
+  for (const [weekday, avoids] of client.dayRules?.byWeekday ?? []) {
+    const dayRule = recipeDayRuleViolation(recipe, avoids, WEEKDAY_NAMES[weekday])
+    // The same menu repeats on every day, so it would be served on that day too.
+    if (dayRule) return `${recipe.name}: ${dayRule} (a same-food menu is served on every day).`
+  }
   return null
 }
 

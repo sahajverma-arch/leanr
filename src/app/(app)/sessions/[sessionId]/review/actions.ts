@@ -18,6 +18,7 @@ import {
   proteinPowderRestriction,
 } from "@/lib/plan/client-profile-from-answers"
 import { extraMealSlotsSchema, isExtraMealSlot } from "@/lib/plan/extra-meal-slots"
+import { dayFoodRulesFromAnswers } from "@/lib/plan/day-food-rules"
 import { fixedMenuItemsSchema, fixedMenuProblems, fixedMenuRecipeRefusal, fixedMenuRefusals, type FixedMenuClient } from "@/lib/plan/fixed-menu"
 import { recipeToCandidate, type SwapCandidate } from "@/lib/plan/recipe-candidate"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
@@ -238,6 +239,7 @@ async function fixedMenuClientFor(sessionId: string): Promise<{ clientId: string
       dietType: dietTypeFromAnswers(answers),
       allergenTags: clientRecipeAllergenTagsFromAnswers(answers),
       avoidTerms: compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(answers)),
+      dayRules: dayFoodRulesFromAnswers(answers),
     },
   }
 }

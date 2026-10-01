@@ -14,6 +14,7 @@ import {
 import { extraMealSlotsSchema } from "@/lib/plan/extra-meal-slots"
 import { FixedMenuCard, type FixedMenuCardItem, type FixedMenuPreview } from "@/components/review/fixed-menu-card"
 import { compileAvoidTerms } from "@/lib/foods/recipe-food-avoidance"
+import { dayFoodRulesFromAnswers } from "@/lib/plan/day-food-rules"
 import { RECIPE_CUISINES } from "@/lib/foods/recipe-cuisine-mapping"
 import {
   buildFixedMenuDay,
@@ -180,7 +181,7 @@ export default async function ReviewPage({
     }
     const avoidTerms = compileAvoidTerms(clientRecipeAvoidTermsFromAnswers(answers))
     const allergenTags = clientRecipeAllergenTagsFromAnswers(answers)
-    const refusals = fixedMenuRefusals(fixedMenuItems, fixedMenuRecipesById, { dietType, allergenTags, avoidTerms })
+    const refusals = fixedMenuRefusals(fixedMenuItems, fixedMenuRecipesById, { dietType, allergenTags, avoidTerms, dayRules: dayFoodRulesFromAnswers(answers) })
     const target: DailyRecipeTarget = {
       kcal: week1.food.kcal,
       proteinG: week1.food.proteinG,
