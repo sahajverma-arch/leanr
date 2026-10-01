@@ -1467,6 +1467,38 @@ mislabelled non-veg dish comes back. Pool sizes after the fix: vegetarian 1074, 
 vegan 606, jain 446. Verified end to end: Dhruti's two old plans show the red banner and refuse
 approval; a fresh vegetarian Gujarati generation came back with 72 dishes and zero animal evidence.
 
+### Realistic lunch/dinner plates: one sabzi, real portions (2026-10-01)
+
+**The complaint:** two sabzis in one meal, a sabzi at 50 g, very little rice. Measured over all 30
+saved recipe plans (420 lunches/dinners) with `scripts/measure-meal-portions.ts`, then fixed and
+re-measured by replaying the production balance + `repairWeek()` over the same dish sets with
+`scripts/replay-plan-portions.ts [--new-limits]`.
+
+**Three causes, three fixes:**
+1. **Serving ranges were wrong at ingestion** (`recipe-quantity-normalize.ts`). Min/Max Quantity count
+   the `Is Measured In` unit ("1-1.5 Katori") but the per-unit weight was divided by the serving
+   text's number, which is often a different unit ("3/4 cup"), and fractions were read as their
+   numerator ("3/4" -> 3). Paneer Bhurji came out 50/150/**75** g (min/ideal/max), Jeera Rice
+   67/200/**133**: the balancer could never plate them at a normal size. Now, for vessel units
+   (katori/cup/glass/bowl/plate): if the serving text names the same vessel its fraction is parsed
+   properly, otherwise one vessel = the authored serving. Count and spoon rows keep the old reading
+   (fractions there gave a 500-1000 g mango). The ideal is always clamped into its own range.
+   186 recipes change; dishes with the ideal outside their range: 88 -> 0. **Takes effect only after
+   `npm run seed:recipes`.**
+2. **Two sabzis per meal** (7 meals, nearly always a paneer/tofu "High Protein Sabzi" beside a plain
+   one). `MAX_SABZI_PER_MEAL = 1`: a plausibility problem, a prompt rule, and
+   `enforceSingleSabzi()` at the start of `repairWeek()` — the extra sabzi becomes a dal/curry if the
+   meal has none, else it is dropped, and the day is re-balanced. Mandatory, not macro-gated.
+3. **One roti as lunch.** A roti's authored minimum is one piece and the balancer parked 109 of 203
+   servings there. `getMealServingLimitsG()` raises the minimum to `MIN_ROTIS_AS_ONLY_STAPLE` (2)
+   pieces when roti is a lunch/dinner's only staple (not when rice is also served), never past the
+   dish's own max. Capped-serving warnings still use the authored range.
+
+**Replay result (30 plans):** sabzi under 100 g 58 -> 0; rice under 150 g 61 -> 7; two-sabzi meals
+7 -> 0; roti-only meals under 2 rotis -> 4 of 181 (dishes whose max is under two pieces); weeks
+passing 26 -> 27; days within ±8% 188 -> 188 (192 with the range fix alone; the 2-roti floor costs
+those 4).
+
 ### Dislikes and allergies are matched on the dish, not only its tag (2026-09-30)
 
 **A client who wrote "Soya chunks" as a dislike got Soya Matar Sabzi twice in a week**, plus Tofu

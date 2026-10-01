@@ -185,6 +185,9 @@ export const clientFixedMenus = pgTable("client_fixed_menus", {
     .references(() => clients.id, { onDelete: "cascade" }),
   enabled: boolean("enabled").notNull().default(false),
   items: jsonb("items").notNull().default([]),
+  // Optional meals (wake_up, bedtime) written as empty slots on every day for
+  // the dietitian to fill. Validated by src/lib/plan/extra-meal-slots.ts.
+  extraSlots: text("extra_slots").array().notNull().default([]),
   createdBy: uuid("created_by").references(() => profiles.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

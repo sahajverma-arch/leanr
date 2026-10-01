@@ -23,6 +23,7 @@ export const CATEGORY_LABEL: Record<Category, string> = {
 }
 
 export const SLOT_LABEL: Record<string, string> = {
+  wake_up: "Wake-up Drink",
   breakfast: "Breakfast",
   mid_morning: "Mid-Morning",
   lunch: "Lunch",
@@ -35,6 +36,7 @@ export const SLOT_LABEL: Record<string, string> = {
 // stores an acceptable planning WINDOW, e.g. "7:30-9:00 AM") — the real
 // plan PDF shows one fixed time per slot.
 export const SLOT_TIME: Record<string, string> = {
+  wake_up: "06:30",
   breakfast: "08:00",
   mid_morning: "11:00",
   lunch: "13:30",

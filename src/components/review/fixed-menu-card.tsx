@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input"
 import { RecipeCandidateList } from "@/components/plan/recipe-candidate-list"
 import { getFixedMenuCandidates, saveFixedMenu } from "@/app/(app)/sessions/[sessionId]/review/actions"
+import { EXTRA_MEAL_SLOTS, type ExtraMealSlot } from "@/lib/plan/extra-meal-slots"
 import { FIXED_MENU_SLOTS, fixedMenuProblems, type FixedMenuSlot } from "@/lib/plan/fixed-menu"
 import type { SwapCandidate } from "@/lib/plan/recipe-candidate"
 import { formatGrams, formatKcal } from "@/lib/format"
@@ -36,19 +37,27 @@ export interface FixedMenuPreview {
  *
  * The preview is computed server-side from the SAVED menu, so it only
  * appears once the menu is saved and matches what generation will produce.
+ *
+ * The optional wake-up drink and bedtime meals (extra-meal-slots.ts) apply to
+ * both routines: a ticked one is added to every day as an empty meal for the
+ * dietitian to fill on the plan page. With "Same food on all days" its dishes
+ * can also be chosen here.
  */
 export function FixedMenuCard({
   sessionId,
   enabled: savedEnabled,
   items: savedItems,
+  extraSlots: savedExtraSlots,
   preview,
 }: {
   sessionId: string
   enabled: boolean
   items: FixedMenuCardItem[]
+  extraSlots: ExtraMealSlot[]
   preview: FixedMenuPreview | null
 }) {
   const [enabled, setEnabled] = useState(savedEnabled)
+  const [extraSlots, setExtraSlots] = useState<ExtraMealSlot[]>(savedExtraSlots)
   const [items, setItems] = useState<FixedMenuCardItem[]>(savedItems)
   const [gramsText, setGramsText] = useState<Record<string, string>>(() =>
     Object.fromEntries(savedItems.map((i) => [key(i), i.grams === null ? "" : String(i.grams)]))
@@ -57,11 +66,24 @@ export function FixedMenuCard({
   const [candidates, setCandidates] = useState<SwapCandidate[] | null>(null)
   const [isPending, startTransition] = useTransition()
 
-  const withGrams = items.map((i) => ({ ...i, grams: parseGrams(gramsText[key(i)]) }))
+  // A dish under an optional meal that is no longer ticked is not saved.
+  const withGrams = items
+    .filter((i) => slotShown(i.slot))
+    .map((i) => ({ ...i, grams: parseGrams(gramsText[key(i)]) }))
   const dirty =
     enabled !== savedEnabled ||
+    JSON.stringify([...extraSlots].sort()) !== JSON.stringify([...savedExtraSlots].sort()) ||
     JSON.stringify(withGrams.map(strip)) !== JSON.stringify(savedItems.map(strip))
   const problems = enabled ? fixedMenuProblems(withGrams) : []
+
+  function slotShown(slot: FixedMenuSlot): boolean {
+    const extra = EXTRA_MEAL_SLOTS.find((s) => s.slot === slot)
+    return !extra || extraSlots.includes(extra.slot)
+  }
+
+  function toggleExtra(slot: ExtraMealSlot, on: boolean) {
+    setExtraSlots((prev) => (on ? [...prev.filter((s) => s !== slot), slot] : prev.filter((s) => s !== slot)))
+  }
 
   function openAdd(slot: FixedMenuSlot) {
     setAddingSlot(slot)
@@ -99,6 +121,7 @@ export function FixedMenuCard({
         sessionId,
         enabled,
         items: withGrams.map(({ slot, recipeId, grams }) => ({ slot, recipeId, grams })),
+        extraSlots,
       })
       if ("error" in result) {
         toast.error(result.error)
@@ -137,9 +160,25 @@ export function FixedMenuCard({
           </label>
         </fieldset>
 
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">Also add these meals</legend>
+          <div className="flex flex-wrap gap-x-6 gap-y-2">
+            {EXTRA_MEAL_SLOTS.map(({ slot, label }) => (
+              <label key={slot} className="flex cursor-pointer items-center gap-2 text-sm">
+                <input type="checkbox" checked={extraSlots.includes(slot)} onChange={(e) => toggleExtra(slot, e.target.checked)} />
+                {label}
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A ticked meal is added to every day of the plan, empty. Add its dishes on the plan page with &ldquo;+ add&rdquo;
+            {enabled ? ", or choose them below" : ""}.
+          </p>
+        </fieldset>
+
         {enabled && (
           <div className="space-y-3">
-            {FIXED_MENU_SLOTS.map(({ slot, label, required }) => {
+            {FIXED_MENU_SLOTS.filter(({ slot }) => slotShown(slot)).map(({ slot, label, required, extra }) => {
               const inSlot = items.filter((i) => i.slot === slot)
               return (
                 <div key={slot} className="rounded-md border p-3">
@@ -153,7 +192,11 @@ export function FixedMenuCard({
                     </Button>
                   </div>
                   {inSlot.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">{required ? "Add at least one dish." : "Nothing — this meal is left out."}</p>
+                    <p className="text-xs text-muted-foreground">{required
+                        ? "Add at least one dish."
+                        : extra
+                          ? "Empty — you can add its dishes on the plan page."
+                          : "Nothing — this meal is left out."}</p>
                   ) : (
                     <ul className="space-y-1.5">
                       {inSlot.map((item) => {

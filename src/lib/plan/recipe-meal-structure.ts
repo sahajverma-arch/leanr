@@ -24,6 +24,12 @@ export const STRUCTURED_MEAL_SLOTS = new Set(["lunch", "dinner"])
 export const STAPLE_BUCKETS = new Set<RecipeCategoryBucket>(["bread", "rice_pulao"])
 export const DAL_BUCKET: RecipeCategoryBucket = "dal_curry"
 
+// One sabzi per lunch/dinner (dietitian rule: "one sabzi, one dal"). A
+// paneer/tofu "High Protein Sabzi" is a sabzi too. Enforced by
+// recipe-repair.ts's enforceSingleSabzi() and checked by
+// recipe-plausibility-validate.ts.
+export const MAX_SABZI_PER_MEAL = 1
+
 // A single dish already counted as a complete meal on its own (Biryani-as-
 // heavy-meal, a Thali-style composite CSV row) satisfies the staple+dal
 // requirement by itself — same "heavy_meal is a whole rich dish" reading
@@ -94,7 +100,7 @@ export function formatSlotStructureRules(slotNames: string[]): string {
   if (applicable.length === 0) return ""
   const lines = applicable.map(
     (s) =>
-      `- ${s} must include ${STAPLE_LABEL} AND ${DAL_LABEL} (a single composite dish that already has real carbs built in — Biryani, a Thali-style Rajma Chawal, a Khichdi/Kadhi-with-rice — counts as both on its own; never add a SEPARATE roti/rice alongside one of these, that's not how they're eaten. But a plain grilled/roasted protein dish like Roasted Chicken, Grilled Chicken Breast, or Grilled Fish has NO carbs and still needs a real staple alongside it, same as any other protein main). A real egg/chicken/fish dish counts as the protein course by itself and does NOT also need a separate Dal/Curry — pair it with just the staple. A real non-veg/egg dish must NEVER also be paired with a cooked Sabzi or Dal/Curry in the same meal (they don't go together) — if you want a side with it, use a Salad instead, or just size up the protein/staple quantity. Never anchor ${s} on soup, tea, dessert, or a liquid dish alone.`
+      `- ${s} must include ${STAPLE_LABEL} AND ${DAL_LABEL} (a single composite dish that already has real carbs built in — Biryani, a Thali-style Rajma Chawal, a Khichdi/Kadhi-with-rice — counts as both on its own; never add a SEPARATE roti/rice alongside one of these, that's not how they're eaten. But a plain grilled/roasted protein dish like Roasted Chicken, Grilled Chicken Breast, or Grilled Fish has NO carbs and still needs a real staple alongside it, same as any other protein main). A real egg/chicken/fish dish counts as the protein course by itself and does NOT also need a separate Dal/Curry — pair it with just the staple. A real non-veg/egg dish must NEVER also be paired with a cooked Sabzi or Dal/Curry in the same meal (they don't go together) — if you want a side with it, use a Salad instead, or just size up the protein/staple quantity. Never anchor ${s} on soup, tea, dessert, or a liquid dish alone. Serve exactly ONE sabzi (a paneer/tofu sabzi counts as the sabzi) with ONE dal/curry; never two sabzis in the same meal.`
   )
   return `\nMeal structure requirements (checked automatically — a day missing these gets sent back for a redo):\n${lines.join("\n")}\n`
 }

@@ -16,6 +16,29 @@ describe("describePlausibilityProblems", () => {
     expect(describePlausibilityProblems(day, constraints)).toEqual(["breakfast has no resolved items"])
   })
 
+  it("does not flag an empty optional wake-up/bedtime meal — the dietitian fills it by hand", () => {
+    const day = makeDay([
+      { slot: "wake_up", items: [] },
+      { slot: "bedtime", items: [] },
+    ])
+    expect(describePlausibilityProblems(day, constraints)).toEqual([])
+  })
+
+  it("does not require a MAIN item at wake_up", () => {
+    const drink = makeRecipe({ name: "Jeera Water", mainOrMid: "mid" })
+    const day = makeDay([{ slot: "wake_up", items: [{ recipe: drink, grams: 200 }] }])
+    expect(describePlausibilityProblems(day, constraints)).toEqual([])
+  })
+
+  it("flags two sabzis in one lunch — one sabzi, one dal", () => {
+    const roti = makeRecipe({ name: "Roti", category: "Roti" })
+    const dal = makeRecipe({ name: "Arhar Dal", category: "Dal" })
+    const paneer = makeRecipe({ name: "Paneer Bhurji", category: "High Protein Sabzi" })
+    const bhindi = makeRecipe({ name: "Bhindi Masala", category: "Sabzi" })
+    const day = makeDay([{ slot: "lunch", items: [roti, dal, paneer, bhindi].map((recipe) => ({ recipe, grams: 150 })) }])
+    expect(describePlausibilityProblems(day, constraints).some((p) => p.includes("2 sabzi dishes"))).toBe(true)
+  })
+
   it("flags a duplicate recipe within one meal", () => {
     const dal = makeRecipe({ name: "Dal" })
     const day = makeDay([{ slot: "lunch", items: [{ recipe: dal, grams: 100 }, { recipe: dal, grams: 50 }] }])

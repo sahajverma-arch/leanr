@@ -33,8 +33,11 @@
  * test is arithmetic on verified per-100g data.
  */
 
+import { isAnimalProteinRecipe } from "@/lib/foods/recipe-animal-content"
+
 import { balanceDayToTargets } from "./recipe-balancer"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
+import { MAX_SABZI_PER_MEAL, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import type { DailyRecipeTarget, GroundedRecipeDay, GroundedRecipeItem, RecipeAchievedMacros, RecipeForPipeline } from "./recipe-types"
 import { RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
@@ -487,6 +490,89 @@ function ensureRegionalDish(
   return { day: current, swaps }
 }
 
+/**
+ * One sabzi per lunch/dinner, never two (dietitian rule: "one sabzi, one
+ * dal"). Measured on the saved plans: 7 of 420 lunches/dinners carried two,
+ * nearly always a paneer/tofu "High Protein Sabzi" beside a plain one, each
+ * then squeezed to a small portion to fit the day.
+ *
+ * For each extra sabzi, whichever of two moves leaves the day's worst macro
+ * lowest after re-balancing: if the meal has no dal/curry yet, turn the sabzi
+ * INTO a dal/curry (the meal needs one anyway); otherwise drop it. The other
+ * dishes, rice and roti included, are re-balanced and absorb its calories.
+ * Mandatory, not macro-gated: plate shape is not traded for a macro point,
+ * and the macro repair that follows brings the day back on target.
+ */
+export function enforceSingleSabzi(
+  day: GroundedRecipeDay,
+  target: DailyRecipeTarget,
+  pool: RepairPool,
+  weeklyCounts: Map<string, number>
+): { day: GroundedRecipeDay; swaps: RepairSwap[] } {
+  const swaps: RepairSwap[] = []
+  if (day.meals.some((meal) => meal.items.some((item) => item.gramsLocked))) return { day, swaps }
+  const dalOptions = (pool.byBucket.get("dal_curry") ?? []).filter(isPlainDalOrCurry)
+
+  let current = day
+  for (let mealIndex = 0; mealIndex < current.meals.length; mealIndex++) {
+    while (STRUCTURED_MEAL_SLOTS.has(current.meals[mealIndex].slot) && sabziIndexes(current.meals[mealIndex]).length > MAX_SABZI_PER_MEAL) {
+      const meal = current.meals[mealIndex]
+      const hasDal = meal.items.some((item) => recipeCategoryBucket(item.recipe.category, item.recipe.name) === "dal_curry")
+      const namesInMeal = new Set(meal.items.map((item) => item.recipe.name))
+      const options: { next: GroundedRecipeDay; swap: RepairSwap }[] = []
+      for (const itemIndex of sabziIndexes(meal)) {
+        const from = meal.items[itemIndex].recipe.name
+        if (!hasDal) {
+          for (const recipe of dalOptions) {
+            if (namesInMeal.has(recipe.name) || (weeklyCounts.get(recipe.name) ?? 0) >= repeatCapFor(recipe)) continue
+            options.push({ next: replaceItem(current, mealIndex, itemIndex, recipe), swap: { dayIndex: current.dayIndex, slot: meal.slot, from, to: recipe.name } })
+          }
+        }
+        options.push({ next: removeItem(current, mealIndex, itemIndex), swap: { dayIndex: current.dayIndex, slot: meal.slot, from, to: REMOVED_EXTRA_SABZI } })
+      }
+
+      let best: { day: GroundedRecipeDay; score: number; swap: RepairSwap } | null = null
+      for (const option of options) {
+        const rebalanced = balanceDayToTargets(option.next, target)
+        const score = worstRelativeDeviation(rebalanced.totals, target)
+        if (best === null || score < best.score) best = { day: rebalanced, score, swap: option.swap }
+      }
+      if (best === null) break
+
+      weeklyCounts.set(best.swap.from, Math.max(0, (weeklyCounts.get(best.swap.from) ?? 1) - 1))
+      if (best.swap.to !== REMOVED_EXTRA_SABZI) weeklyCounts.set(best.swap.to, (weeklyCounts.get(best.swap.to) ?? 0) + 1)
+      swaps.push(best.swap)
+      current = best.day
+    }
+  }
+  return { day: current, swaps }
+}
+
+/** RepairSwap.to for a sabzi taken off the plate rather than replaced. */
+export const REMOVED_EXTRA_SABZI = "(removed: one sabzi per meal)"
+
+function sabziIndexes(meal: GroundedRecipeDay["meals"][number]): number[] {
+  return meal.items.flatMap((item, i) => (recipeCategoryBucket(item.recipe.category, item.recipe.name) === "sabzi" ? [i] : []))
+}
+
+/**
+ * A dal or a vegetarian curry (Arhar Dal, Rajma Curry): not a porridge or a
+ * khichdi, which share the dal_curry bucket, and not a meat curry, which may
+ * not sit beside a sabzi at all.
+ */
+function isPlainDalOrCurry(recipe: RecipeForPipeline): boolean {
+  if (isAnimalProteinRecipe(recipe)) return false
+  const category = recipe.category.trim().toLowerCase()
+  return category === "dal" || category === "curry" || (category.includes("sabzi") && /curry/i.test(recipe.name))
+}
+
+function removeItem(day: GroundedRecipeDay, mealIndex: number, itemIndex: number): GroundedRecipeDay {
+  return {
+    ...day,
+    meals: day.meals.map((meal, mi) => (mi === mealIndex ? { ...meal, items: meal.items.filter((_, ii) => ii !== itemIndex) } : meal)),
+  }
+}
+
 /** Every recipe name in the week, with how many days it appears on — the variety cap's own unit. */
 function countWeeklyRecipeUse(days: GroundedRecipeDay[]): Map<string, number> {
   const counts = new Map<string, number>()
@@ -511,7 +597,12 @@ export function repairWeek(
   const weeklyCounts = countWeeklyRecipeUse(days)
   const swaps: RepairSwap[] = []
   const repaired = days.map((day) => {
-    const result = repairDay(day, target, pool, constraints, weeklyCounts)
+    // Plate shape first, then macros: the macro repair below only swaps a
+    // dish for one of the same bucket, so it keeps whatever sabzi count it
+    // is handed.
+    const single = enforceSingleSabzi(day, target, pool, weeklyCounts)
+    swaps.push(...single.swaps)
+    const result = repairDay(single.day, target, pool, constraints, weeklyCounts)
     swaps.push(...result.swaps)
     return result.day
   })

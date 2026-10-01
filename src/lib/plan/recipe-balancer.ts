@@ -31,7 +31,7 @@
 
 import type { DailyRecipeTarget, GroundedRecipeDay, GroundedRecipeMeal } from "./recipe-types"
 import { computeMealsTotals } from "./recipe-grounding"
-import { getServingLimitsG } from "./recipe-serving-limits"
+import { getMealServingLimitsG, getServingLimitsG } from "./recipe-serving-limits"
 
 const WEIGHTS = { kcal: 0.4, proteinG: 2.0, carbsG: 1.0, fatG: 1.0, fiberG: 0.5 }
 const ITERATIONS = 200
@@ -57,7 +57,17 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
     return { ...day, totals: computeMealsTotals(day.meals), cappedRecipeNames: [] }
   }
 
-  const limits = flatItems.map((item) => getServingLimitsG(item.recipe))
+  // Per meal, not per dish alone: a roti that is a meal's only staple has a
+  // two-roti floor (see getMealServingLimitsG).
+  const limits = day.meals.flatMap((meal) =>
+    meal.items.map((item) =>
+      getMealServingLimitsG(
+        item.recipe,
+        meal.slot,
+        meal.items.map((i) => i.recipe)
+      )
+    )
+  )
   const perGram = flatItems.map((item) => macroPerGram(item.recipe))
   const locked = flatItems.map((item) => item.gramsLocked === true)
   let x = flatItems.map((item) => item.grams)
@@ -95,7 +105,9 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
     slot: meal.slot,
     items: meal.items.map((item) => {
       const grams = finalGrams[cursor]
-      const lim = limits[cursor]
+      // Against the dish's AUTHORED range: a roti held on its meal floor
+      // (two rotis) is a rule working, not a serving limit worth a warning.
+      const lim = getServingLimitsG(item.recipe)
       const isLocked = locked[cursor]
       if (!isLocked && (grams >= lim.max - CAP_MARGIN_G || grams <= lim.min + CAP_MARGIN_G)) {
         cappedRecipeNames.push(item.recipe.name)

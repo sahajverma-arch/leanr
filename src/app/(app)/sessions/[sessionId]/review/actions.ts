@@ -17,6 +17,7 @@ import {
   dietTypeFromAnswers,
   proteinPowderRestriction,
 } from "@/lib/plan/client-profile-from-answers"
+import { extraMealSlotsSchema, isExtraMealSlot } from "@/lib/plan/extra-meal-slots"
 import { fixedMenuItemsSchema, fixedMenuProblems, fixedMenuRecipeRefusal, fixedMenuRefusals, type FixedMenuClient } from "@/lib/plan/fixed-menu"
 import { recipeToCandidate, type SwapCandidate } from "@/lib/plan/recipe-candidate"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
@@ -256,13 +257,15 @@ const fixedMenuInputSchema = z.object({
   sessionId: z.string().uuid(),
   enabled: z.boolean(),
   items: fixedMenuItemsSchema,
+  extraSlots: extraMealSlotsSchema.default([]),
 })
 
 export type FixedMenuInput = z.input<typeof fixedMenuInputSchema>
 
 /**
- * Saves the tick and the dishes. Unticking keeps the dishes, so ticking again
- * restores them. A ticked menu must be complete and servable to this client.
+ * Saves the tick, the dishes and the optional wake-up/bedtime meals
+ * (extra-meal-slots.ts). Unticking keeps the dishes, so ticking again
+ * restores them. Dishes for an optional meal that is not ticked are dropped. A ticked menu must be complete and servable to this client.
  * Errors are RETURNED, not thrown: Next.js hides a thrown Server Action
  * message in production (same reason as setMealNote).
  */
@@ -270,7 +273,8 @@ export async function saveFixedMenu(input: FixedMenuInput): Promise<{ error: str
   const user = await requireStaffUser()
   const parsed = fixedMenuInputSchema.safeParse(input)
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid fixed menu." }
-  const { sessionId, enabled, items } = parsed.data
+  const { sessionId, enabled, extraSlots } = parsed.data
+  const items = parsed.data.items.filter((i) => !isExtraMealSlot(i.slot) || (extraSlots as readonly string[]).includes(i.slot))
 
   const { clientId, client } = await fixedMenuClientFor(sessionId)
   if (enabled) {
@@ -284,8 +288,8 @@ export async function saveFixedMenu(input: FixedMenuInput): Promise<{ error: str
 
   await db
     .insert(clientFixedMenus)
-    .values({ clientId, enabled, items, createdBy: user.id })
-    .onConflictDoUpdate({ target: clientFixedMenus.clientId, set: { enabled, items, updatedAt: new Date() } })
+    .values({ clientId, enabled, items, extraSlots, createdBy: user.id })
+    .onConflictDoUpdate({ target: clientFixedMenus.clientId, set: { enabled, items, extraSlots, updatedAt: new Date() } })
 
   revalidatePath(`/sessions/${sessionId}/review`)
   return { ok: true }

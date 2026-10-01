@@ -31,12 +31,16 @@ import { describePlausibilityProblems, type ClientRecipeConstraints } from "./re
 import type { DailyRecipeTarget, GroundedRecipeDay, MealSlotInfo, RecipeForPipeline } from "./recipe-types"
 import { describeMacroProblems } from "./recipe-validate"
 
+// `extra` slots (extra-meal-slots.ts) are offered only when the dietitian has
+// ticked that meal for this client, and are passed in as slots by the caller.
 export const FIXED_MENU_SLOTS = [
-  { slot: "breakfast", label: "Breakfast", required: true },
-  { slot: "mid_morning", label: "Mid-morning", required: false },
-  { slot: "lunch", label: "Lunch", required: true },
-  { slot: "evening", label: "Evening", required: false },
-  { slot: "dinner", label: "Dinner", required: true },
+  { slot: "wake_up", label: "Wake-up drink", required: false, extra: true },
+  { slot: "breakfast", label: "Breakfast", required: true, extra: false },
+  { slot: "mid_morning", label: "Mid-morning", required: false, extra: false },
+  { slot: "lunch", label: "Lunch", required: true, extra: false },
+  { slot: "evening", label: "Evening", required: false, extra: false },
+  { slot: "dinner", label: "Dinner", required: true, extra: false },
+  { slot: "bedtime", label: "Bedtime", required: false, extra: true },
 ] as const
 
 export type FixedMenuSlot = (typeof FIXED_MENU_SLOTS)[number]["slot"]

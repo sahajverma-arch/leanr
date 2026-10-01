@@ -15,6 +15,7 @@ import { applyVegetableDishNames } from "@/lib/plan/vegetable-dish-naming"
 import { isMixedVegDay } from "@/lib/plan/mixed-veg-day"
 import type { PlanViewModel } from "@/lib/plan/plan-view-model"
 import { planDateRangeLabel } from "@/lib/plan/plan-view-model"
+import { isExtraMealSlot } from "@/lib/plan/extra-meal-slots"
 
 const COLORS = { protein: "#facc15", carbs: "#38bdf8", fat: "#f97316" }
 
@@ -244,6 +245,8 @@ export function PlanPdfDocument({ model }: { model: PlanViewModel }) {
                 <Text style={[styles.cellNum, styles.th]}>Cal%</Text>
               </View>
               {day.meals.map((meal) => {
+                // An optional wake-up/bedtime meal left empty is not printed.
+                if (isExtraMealSlot(meal.slot) && meal.items.length === 0 && !meal.note) return null
                 const groups = applyVegetableDishNames(
                   combineDishGroups(
                     composeMealDisplay(meal.items, model.plan.region),

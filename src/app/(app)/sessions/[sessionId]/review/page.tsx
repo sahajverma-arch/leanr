@@ -11,6 +11,7 @@ import {
   proteinPowderRestriction,
   regionFromAnswers,
 } from "@/lib/plan/client-profile-from-answers"
+import { extraMealSlotsSchema } from "@/lib/plan/extra-meal-slots"
 import { FixedMenuCard, type FixedMenuCardItem, type FixedMenuPreview } from "@/components/review/fixed-menu-card"
 import { compileAvoidTerms } from "@/lib/foods/recipe-food-avoidance"
 import { RECIPE_CUISINES } from "@/lib/foods/recipe-cuisine-mapping"
@@ -483,6 +484,7 @@ export default async function ReviewPage({
           sessionId={sessionId}
           enabled={fixedMenuRow?.enabled ?? false}
           items={fixedMenuCardItems}
+          extraSlots={extraMealSlotsSchema.parse(fixedMenuRow?.extraSlots ?? [])}
           preview={fixedMenuPreview}
         />
       </section>

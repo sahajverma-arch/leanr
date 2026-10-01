@@ -8,9 +8,10 @@
 import { isAnimalProteinRecipe, isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { recipeAvoidanceConflict, type CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
-import { DAL_BUCKET, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MEAT_CONFLICTING_BUCKETS, STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
+import { DAL_BUCKET, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MAX_SABZI_PER_MEAL, MEAT_CONFLICTING_BUCKETS, STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { isMustHaveSatisfied } from "./recipe-pairing"
 import type { GroundedRecipeDay } from "./recipe-types"
+import { isExtraMealSlot } from "./extra-meal-slots"
 
 export interface ClientRecipeConstraints {
   dietType: string
@@ -42,14 +43,18 @@ const MEAT_SATISFIES_MARKERS = new Set(["sabzi", "high protein sabzi", "dal", "c
 // every real day otherwise (mid_morning legitimately has only chai/fruit,
 // never a MAIN item), so requiring one here was a bug, not a real
 // plausibility problem.
-const NO_MAIN_REQUIRED_SLOTS = new Set(["mid_morning", "evening", "bedtime"])
+// wake_up is the same kind of occasion (a drink), added by the dietitian
+// (extra-meal-slots.ts).
+const NO_MAIN_REQUIRED_SLOTS = new Set(["wake_up", "mid_morning", "evening", "bedtime"])
 
 export function describePlausibilityProblems(day: GroundedRecipeDay, constraints: ClientRecipeConstraints): string[] {
   const problems: string[] = []
 
   for (const meal of day.meals) {
     if (meal.items.length === 0) {
-      problems.push(`${meal.slot} has no resolved items`)
+      // An optional wake-up/bedtime meal starts empty by design: it is a slot
+      // the dietitian fills by hand, not a meal that went missing.
+      if (!isExtraMealSlot(meal.slot)) problems.push(`${meal.slot} has no resolved items`)
       continue
     }
 
@@ -160,6 +165,11 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
         // carb-and-dal course, they add a side (sabzi/salad/raita), not
         // another roti or rice.
         problems.push(`${meal.slot} pairs an already-complete dish with a separate staple (roti/rice) — real ${meal.slot}s don't serve these together; add a side instead, not another staple`)
+      }
+
+      const sabziCount = itemBuckets.filter((b) => b === "sabzi").length
+      if (sabziCount > MAX_SABZI_PER_MEAL) {
+        problems.push(`${meal.slot} has ${sabziCount} sabzi dishes — serve one sabzi with one dal, not two sabzis`)
       }
 
       // Meat/fish/egg is its own protein-and-side course — never paired

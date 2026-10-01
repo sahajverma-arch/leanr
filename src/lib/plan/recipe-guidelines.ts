@@ -44,7 +44,9 @@ export function buildRecipeGuidelines({ plan, days, roadmapOutput }: BuildRecipe
     }
   }
 
-  const mealCount = day0?.meals.length ?? 0
+  // An optional wake-up/bedtime meal the dietitian has not filled yet is not a meal.
+  const mealCount = day0?.meals.filter((m) => m.items.length > 0).length ?? 0
+  const hasBedtime = day0?.meals.some((m) => m.slot === "bedtime" && m.items.length > 0) ?? false
   guidelines.push({
     lead: `${numberWord(mealCount)} meals, fixed times.`,
     text: "Skipping a meal doesn't lower the day's total — it just makes the remaining meals harder to finish.",
@@ -71,7 +73,11 @@ export function buildRecipeGuidelines({ plan, days, roadmapOutput }: BuildRecipe
     text: "Fibre is tracked alongside calories and macros and shown on the plan, but — unlike calories, protein, carbs and fat — it is not a hard pass/fail target.",
   })
 
-  guidelines.push({ text: "Hydration: 3.5+ litres of water per day. Dinner is the last meal of the day." })
+  guidelines.push({
+    text: hasBedtime
+      ? "Hydration: 3.5+ litres of water per day. After dinner, have only what is listed at bedtime."
+      : "Hydration: 3.5+ litres of water per day. Dinner is the last meal of the day.",
+  })
 
   const foodsToAvoid: string[] = [
     "Sweetened drinks, packaged juice, cold drinks",

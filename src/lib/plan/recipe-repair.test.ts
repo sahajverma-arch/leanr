@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { balanceDayToTargets } from "./recipe-balancer"
-import { buildRepairPool, enforceVariety, repairDay, repairWeek, worstRelativeDeviation, REPAIR_TARGET_DEVIATION } from "./recipe-repair"
+import { buildRepairPool, enforceSingleSabzi, enforceVariety, repairDay, repairWeek, worstRelativeDeviation, REPAIR_TARGET_DEVIATION } from "./recipe-repair"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { makeRecipe } from "./test-fixtures"
 import type { DailyRecipeTarget, GroundedRecipeDay, RecipeForPipeline } from "./recipe-types"
@@ -226,5 +226,38 @@ describe("enforceVariety", () => {
     const pool = buildRepairPool([roti, missi].map(pipeline))
     const result = enforceVariety(week([roti, roti, roti, roti]), target, pool, constraints)
     expect(result.swaps).toEqual([])
+  })
+})
+
+describe("enforceSingleSabzi", () => {
+  const target: DailyRecipeTarget = { kcal: 1800, proteinG: 70, carbsG: 230, fatG: 60, fiberG: 25 }
+  const roti = pipeline(makeRecipe({ name: "Roti", category: "Roti", carbsPer100G: 45, proteinPer100G: 9, fatPer100G: 3 }))
+  const paneer = pipeline(makeRecipe({ name: "Paneer Bhurji", category: "High Protein Sabzi", proteinPer100G: 14, fatPer100G: 12 }))
+  const bhindi = pipeline(makeRecipe({ name: "Bhindi Masala", category: "Sabzi" }))
+  const dal = pipeline(makeRecipe({ name: "Arhar Dal", category: "Dal", proteinPer100G: 7 }))
+  const porridge = pipeline(makeRecipe({ name: "Oats Porridge", category: "Dal Porridge" }))
+  const sabziCount = (day: GroundedRecipeDay) =>
+    day.meals[0].items.filter((i) => ["Sabzi", "High Protein Sabzi"].includes(i.recipe.category)).length
+
+  it("drops the extra sabzi when the meal already has a dal", () => {
+    const day = makeDay([roti, paneer, bhindi, dal], target, "lunch")
+    const result = enforceSingleSabzi(day, target, buildRepairPool([roti, paneer, bhindi, dal]), new Map())
+    expect(sabziCount(result.day)).toBe(1)
+    expect(result.day.meals[0].items.some((i) => i.recipe.name === "Arhar Dal")).toBe(true)
+    expect(result.swaps).toHaveLength(1)
+  })
+
+  it("turns the extra sabzi into a dal (never a porridge) when the meal has none", () => {
+    const day = makeDay([roti, paneer, bhindi], target, "dinner")
+    const result = enforceSingleSabzi(day, target, buildRepairPool([roti, paneer, bhindi, dal, porridge]), new Map())
+    expect(sabziCount(result.day)).toBe(1)
+    const names = result.day.meals[0].items.map((i) => i.recipe.name)
+    expect(names).not.toContain("Oats Porridge")
+    expect(names.includes("Arhar Dal") || result.swaps[0].to.startsWith("(removed")).toBe(true)
+  })
+
+  it("leaves breakfast and snacks alone", () => {
+    const day = makeDay([paneer, bhindi], target, "evening")
+    expect(enforceSingleSabzi(day, target, buildRepairPool([paneer, bhindi, dal]), new Map()).swaps).toEqual([])
   })
 })

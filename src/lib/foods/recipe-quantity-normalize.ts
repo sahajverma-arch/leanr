@@ -56,9 +56,29 @@ function fallback(category: string, name: string, flags: string[]): ServingLimit
   return { minGrams: d.min, maxGrams: d.max, idealGrams: d.ideal, source: "fallback_category_default", flags }
 }
 
-/** Leading number, optionally a range (midpoint) — "2" -> 2, "1 Cup" -> 1, "2-3 egg whites" -> 2.5, "-" / "" -> null. */
-function extractLeadingNumber(raw: string): { value: number | null; wasRange: boolean } {
+/**
+ * Leading number, optionally a range (midpoint) — "2" -> 2, "1 Cup" -> 1,
+ * "2-3 egg whites" -> 2.5, "-" / "" -> null. With `fractions`, also
+ * "3/4 cup" -> 0.75 and "1 1/2 cup" -> 1.5; without, a fraction reads as its
+ * numerator ("3/4" -> 3), the original behaviour.
+ *
+ * Fractions are read properly only where the serving text and the measuring
+ * unit name the same vessel (see computeServingLimits). Applied to count and
+ * spoon rows they turned "1/2 fruit" into a 500-1000 g mango and "1/4 cup
+ * almond" into 300-600 g of almonds — those rows' serving text and Min/Max
+ * are in different units, so no parse of the fraction makes them agree.
+ */
+export function extractLeadingNumber(raw: string, { fractions = false }: { fractions?: boolean } = {}): { value: number | null; wasRange: boolean } {
   const trimmed = raw.trim()
+  if (!fractions) return extractLeadingWholeNumber(trimmed)
+  const mixed = trimmed.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)/)
+  if (mixed && Number(mixed[3]) > 0) return { value: Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]), wasRange: false }
+  const fraction = trimmed.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/)
+  if (fraction && Number(fraction[2]) > 0) return { value: Number(fraction[1]) / Number(fraction[2]), wasRange: false }
+  return extractLeadingWholeNumber(trimmed)
+}
+
+function extractLeadingWholeNumber(trimmed: string): { value: number | null; wasRange: boolean } {
   const rangeMatch = trimmed.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/)
   if (rangeMatch) {
     const lo = parseFloat(rangeMatch[1])
@@ -82,6 +102,14 @@ function extractGrams(raw: string): { value: number | null; wasRange: boolean } 
   const single = trimmed.match(/^(\d+(?:\.\d+)?)\s*(?:gm|g|ml)?/i)
   if (single) return { value: parseFloat(single[1]), wasRange: false }
   return { value: null, wasRange: false }
+}
+
+const VESSELS = ["katori", "cup", "glass", "bowl", "plate"] as const
+
+/** Which serving vessel a unit text names ("Medium Bowl" -> bowl), or null for counts, grams, spoons and anything else. */
+function vesselOf(text: string): (typeof VESSELS)[number] | null {
+  const t = text.toLowerCase()
+  return VESSELS.find((v) => new RegExp(`\\b${v}s?\\b`).test(t)) ?? null
 }
 
 export function computeServingLimits(row: RawRecipeRow): ServingLimits {
@@ -124,12 +152,25 @@ export function computeServingLimits(row: RawRecipeRow): ServingLimits {
     return fallback(row.category, row.name, flags)
   }
 
-  const perUnitGrams = wtOfMeasuredAmt.value / qtyPerServing.value
+  // Min/Max Quantity count the `Is Measured In` unit ("1-1.5 Katori"), while
+  // the serving text often names a different one ("3/4 cup"). Dividing a
+  // katori count by a cup count mixes units. When the measuring unit is a
+  // vessel the serving text does not name, one vessel is the authored serving.
+  // When both name the same vessel, a fraction is a real fraction of it.
+  const vessel = vesselOf(row.isMeasuredInRaw)
+  const servingNamesVessel = vessel !== null && vesselOf(row.quantityPerServingRaw) === vessel
+  const servingCount = servingNamesVessel ? (extractLeadingNumber(row.quantityPerServingRaw, { fractions: true }).value ?? qtyPerServing.value) : qtyPerServing.value
+  const perUnitGrams = vessel !== null && !servingNamesVessel ? wtOfMeasuredAmt.value : wtOfMeasuredAmt.value / servingCount
+  if (vessel !== null && !servingNamesVessel && qtyPerServing.value !== 1) {
+    flags.push(`Serving "${row.quantityPerServingRaw}" is not in the measuring unit "${row.isMeasuredInRaw}" — one ${vessel} taken as the authored serving`)
+  }
   let minGrams = minQty * perUnitGrams
   let maxGrams = maxQty * perUnitGrams
   if (minGrams > maxGrams) [minGrams, maxGrams] = [maxGrams, minGrams]
 
-  const idealGrams = Math.round(wtOfMeasuredAmt.value)
+  // The balancer starts every dish at idealGrams and clamps it into
+  // [min, max]; a starting point outside its own range is a contradiction.
+  const idealGrams = Math.round(Math.min(Math.max(wtOfMeasuredAmt.value, minGrams), maxGrams))
 
   if (!Number.isFinite(minGrams) || !Number.isFinite(maxGrams) || minGrams < PLAUSIBLE_GRAMS_RANGE.min || maxGrams > PLAUSIBLE_GRAMS_RANGE.max) {
     flags.push(`Computed range ${minGrams.toFixed(0)}-${maxGrams.toFixed(0)}g fell outside the plausibility envelope`)

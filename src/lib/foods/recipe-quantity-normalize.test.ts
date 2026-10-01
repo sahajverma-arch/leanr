@@ -93,4 +93,33 @@ describe("computeServingLimits", () => {
     const limits = computeServingLimits(row)
     expect(limits.minGrams).toBeLessThanOrEqual(limits.maxGrams)
   })
+
+  it("reads a katori-measured dish served as '3/4 cup' as one katori = the authored serving (Paneer Bhurji)", () => {
+    const row = makeRow({ isMeasuredInRaw: "Katori", quantityPerServingRaw: "3/4 cup", minQuantityRaw: "1", maximumQuantityRaw: "1.5", wtOfMeasuredAmtRaw: "150gm" })
+    const limits = computeServingLimits(row)
+    expect(limits.minGrams).toBe(150)
+    expect(limits.maxGrams).toBe(225)
+    expect(limits.idealGrams).toBe(150)
+  })
+
+  it("reads a fraction properly when the serving names the measuring vessel", () => {
+    const row = makeRow({ isMeasuredInRaw: "Cup", quantityPerServingRaw: "1/2 cup", minQuantityRaw: "1", maximumQuantityRaw: "2", wtOfMeasuredAmtRaw: "100gm" })
+    const limits = computeServingLimits(row)
+    expect(limits.minGrams).toBe(200)
+    expect(limits.maxGrams).toBe(400)
+  })
+
+  it("leaves count-measured rows on the original reading (a '1/2 fruit' mango is not 500-1000 g)", () => {
+    const row = makeRow({ category: "Fruit", isMeasuredInRaw: "Numbers", quantityPerServingRaw: "1/2 fruit", minQuantityRaw: "1", maximumQuantityRaw: "2", wtOfMeasuredAmtRaw: "250gm" })
+    const limits = computeServingLimits(row)
+    expect(limits.minGrams).toBe(250)
+    expect(limits.maxGrams).toBe(500)
+  })
+
+  it("keeps the typical portion inside its own range", () => {
+    const row = makeRow({ isMeasuredInRaw: "Numbers", quantityPerServingRaw: "4 small idli", minQuantityRaw: "2", maximumQuantityRaw: "3", wtOfMeasuredAmtRaw: "135gm" })
+    const limits = computeServingLimits(row)
+    expect(limits.idealGrams).toBeLessThanOrEqual(limits.maxGrams)
+    expect(limits.idealGrams).toBeGreaterThanOrEqual(limits.minGrams)
+  })
 })

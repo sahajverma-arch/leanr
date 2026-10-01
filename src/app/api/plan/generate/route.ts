@@ -88,6 +88,7 @@ import {
   repeatFixedMenuDay,
   type FixedMenuItem,
 } from "@/lib/plan/fixed-menu"
+import { extraMealSlotInfos, extraMealSlotsSchema } from "@/lib/plan/extra-meal-slots"
 import { seasonFor } from "@/lib/plan/season"
 import { sumExchanges, type AchievedMacros, type ExchangeCode, type ExchangeCounts } from "@/lib/plan/table-4-1"
 import {
@@ -348,6 +349,12 @@ interface RecipeEngineContext {
   clientRecipeAvoidTerms: string[]
   /** The client's fixed menu when "Same food on all days" is ticked, else null. See fixed-menu.ts. */
   fixedMenu: FixedMenuItem[] | null
+  /**
+   * Optional wake-up/bedtime meals the dietitian ticked (extra-meal-slots.ts).
+   * NOT in `slots`, so the model never sees them: each is written as an empty
+   * meal on every day, unless a fixed menu already filled it.
+   */
+  extraSlots: MealSlotInfo[]
   /** Dietitian Knowledge RAG layer (gated by DIETITIAN_KNOWLEDGE_ENABLED) — empty when off or nothing retrieved. See CLAUDE.md "Dietitian knowledge layer". */
   knowledgeChunks: RetrievedKnowledgeChunk[]
   knowledgeDroppedForBudget: DroppedKnowledgeChunk[]
@@ -592,7 +599,7 @@ async function generateFixedMenuPlan(
 
   let day
   try {
-    day = buildFixedMenuDay(items, recipesById, ctx.slots, ctx.dailyTarget)
+    day = buildFixedMenuDay(items, recipesById, [...ctx.slots, ...ctx.extraSlots], ctx.dailyTarget)
   } catch (err) {
     if (err instanceof FixedMenuError) return NextResponse.json({ error: err.message }, { status: 422 })
     throw err
@@ -763,14 +770,20 @@ async function persistRecipeWeek(
       .returning({ id: dietPlanDays.id, dayIndex: dietPlanDays.dayIndex })
     const dayIdByIndex = new Map(dayRows.map((r) => [r.dayIndex, r.id]))
 
-    const mealValues = days.flatMap((day) =>
-      day.meals.map((meal) => ({
+    const allSlots = [...ctx.slots, ...ctx.extraSlots]
+    const mealValues = days.flatMap((day) => [
+      ...day.meals.map((meal) => ({
         dietPlanDayId: dayIdByIndex.get(day.dayIndex)!,
         slot: meal.slot,
-        slotOrder: ctx.slots.find((s) => s.slot === meal.slot)?.slotOrder ?? 0,
+        slotOrder: allSlots.find((s) => s.slot === meal.slot)?.slotOrder ?? 0,
         archetypeId: null,
-      }))
-    )
+      })),
+      // The optional meals the dietitian ticked, as empty slots in the
+      // skeleton for them to fill with "+ add" on the plan page.
+      ...ctx.extraSlots
+        .filter((extra) => !day.meals.some((m) => m.slot === extra.slot))
+        .map((extra) => ({ dietPlanDayId: dayIdByIndex.get(day.dayIndex)!, slot: extra.slot, slotOrder: extra.slotOrder, archetypeId: null })),
+    ])
     const mealRows = mealValues.length
       ? await tx
           .insert(dietPlanMeals)
@@ -1004,6 +1017,8 @@ export async function POST(request: Request) {
     const clientRecipeAvoidTerms = clientRecipeAvoidTermsFromAnswers(session.answers as Answers)
     const [fixedMenuRow] = await db.select().from(clientFixedMenus).where(eq(clientFixedMenus.clientId, client.id)).limit(1)
     const fixedMenu = fixedMenuRow?.enabled ? fixedMenuItemsSchema.parse(fixedMenuRow.items) : null
+    // Never passed to the model: only written as empty meals (extra-meal-slots.ts).
+    const extraSlots = extraMealSlotInfos(extraMealSlotsSchema.parse(fixedMenuRow?.extraSlots ?? []))
     const dailyRecipeTarget: DailyRecipeTarget = {
       kcal: dailyTarget.kcal,
       proteinG: dailyTarget.proteinG,
@@ -1124,6 +1139,7 @@ export async function POST(request: Request) {
       clientRecipeAllergenTags,
       clientRecipeAvoidTerms,
       fixedMenu,
+      extraSlots,
       knowledgeChunks,
       knowledgeDroppedForBudget,
       dietPlanExamples,
