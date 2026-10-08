@@ -135,6 +135,10 @@ function buildRecipeValues(
       fatPer100G: row.fatPer100G,
       fiberPer100G: row.fiberPer100G,
       recipeUrl,
+      // Retired by a dietitian (recipe-curation-overrides.ts). Set on every
+      // run, so a retirement survives a re-seed and an un-retirement takes
+      // effect on the next one.
+      isActive: !overrides.isRetired(row.name),
       rawCsvRow: row as unknown as Record<string, unknown>,
     },
     diagnostics: {
@@ -253,10 +257,15 @@ async function main() {
   console.log(
     `Curation overrides applied (recipe-curation-overrides.ts) — category: ${overrides.appliedCategoryCount}, season: ${overrides.appliedSeasonCount}`
   )
-  if (unmatchedOverrides.category.length > 0 || unmatchedOverrides.season.length > 0) {
+  if (
+    unmatchedOverrides.category.length > 0 ||
+    unmatchedOverrides.season.length > 0 ||
+    unmatchedOverrides.retired.length > 0
+  ) {
     console.log(`  STALE override entries matching no recipe (renamed source row?) — fix or remove them:`)
     unmatchedOverrides.category.forEach((n) => console.log(`    category: "${n}"`))
     unmatchedOverrides.season.forEach((n) => console.log(`    season: "${n}"`))
+    unmatchedOverrides.retired.forEach((n) => console.log(`    retired: "${n}"`))
   }
   console.log(`Diet labels vetoed by the dish's own name/allergens/ingredients: ${dietLabelVetoes.length}`)
   dietLabelVetoes.forEach((v) => console.log(`  - ${v}`))

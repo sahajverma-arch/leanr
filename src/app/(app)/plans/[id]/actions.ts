@@ -254,8 +254,13 @@ async function performRecipeSwap(itemId: string, newRecipeId: string): Promise<s
   if (!loaded) throw new PlanEditError("Item not found.")
   assertEditable(loaded.ctx)
 
-  const [newRecipe] = await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(eq(recipes.id, newRecipeId)).limit(1)
-  if (!newRecipe) throw new PlanEditError("Recipe not found.")
+  // Inactive = retired by a dietitian (recipe-curation-overrides.ts); the picker never offers it.
+  const [newRecipe] = await db
+    .select(RECIPE_PIPELINE_COLUMNS)
+    .from(recipes)
+    .where(and(eq(recipes.id, newRecipeId), eq(recipes.isActive, true)))
+    .limit(1)
+  if (!newRecipe) throw new PlanEditError("Recipe not found, or no longer in use.")
   assertRecipeAllowed(newRecipe, loaded.ctx, loaded.day.date)
 
   await db.transaction(async (tx) => {
@@ -504,8 +509,13 @@ export async function addPlanItem(mealId: string, recipeId: string): Promise<voi
   if (!loaded) throw new PlanEditError("Meal not found, or this plan's items are not editable.")
   assertEditable(loaded.ctx)
 
-  const [recipe] = await db.select(RECIPE_PIPELINE_COLUMNS).from(recipes).where(eq(recipes.id, recipeId)).limit(1)
-  if (!recipe) throw new PlanEditError("Recipe not found.")
+  // Inactive = retired by a dietitian (recipe-curation-overrides.ts); the picker never offers it.
+  const [recipe] = await db
+    .select(RECIPE_PIPELINE_COLUMNS)
+    .from(recipes)
+    .where(and(eq(recipes.id, recipeId), eq(recipes.isActive, true)))
+    .limit(1)
+  if (!recipe) throw new PlanEditError("Recipe not found, or no longer in use.")
   assertRecipeAllowed(recipe, loaded.ctx, loaded.day.date)
 
   const [duplicate] = await db

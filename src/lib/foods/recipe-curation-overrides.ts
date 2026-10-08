@@ -108,6 +108,22 @@ export const SEASON_OVERRIDES: Record<string, CurationOverride<Season>> = {
 }
 
 /**
+ * Recipes a dietitian has removed from use, keyed by exact recipe name.
+ *
+ * Seeded with `is_active = false` rather than deleted: saved plans still
+ * reference the row (and snapshot its macros), so deleting it would break
+ * them. An inactive recipe is never offered to generation, the swap/add
+ * pickers or the fixed menu. Listed here, not patched in the DB, because
+ * the next `npm run seed:recipes` would otherwise bring it back.
+ */
+export const RETIRED_RECIPES: Record<string, { reason: string }> = {
+  "Sprout Chilla": {
+    reason:
+      "Same dish as Moong Dal Chilla (dietitian, 2026-10-08). Its own row also claimed only 1.5 g protein / 100 g.",
+  },
+}
+
+/**
  * Tracks which override keys actually matched a real recipe during a run,
  * so a name drifting in a future CSV refresh surfaces as a warning instead
  * of silently disabling a correction — the same "never silent" discipline
@@ -117,6 +133,13 @@ export const SEASON_OVERRIDES: Record<string, CurationOverride<Season>> = {
 export class CurationOverrideTracker {
   private readonly usedCategory = new Set<string>()
   private readonly usedSeason = new Set<string>()
+  private readonly usedRetired = new Set<string>()
+
+  isRetired(recipeName: string): boolean {
+    if (!RETIRED_RECIPES[recipeName]) return false
+    this.usedRetired.add(recipeName)
+    return true
+  }
 
   applyCategory(recipeName: string, sourceCategory: string): string {
     const override = CATEGORY_OVERRIDES[recipeName]
@@ -141,8 +164,9 @@ export class CurationOverrideTracker {
   }
 
   /** Override keys that never matched a recipe — a stale table entry, or a renamed source row. */
-  unmatched(): { category: string[]; season: string[] } {
+  unmatched(): { category: string[]; season: string[]; retired: string[] } {
     return {
+      retired: Object.keys(RETIRED_RECIPES).filter((n) => !this.usedRetired.has(n)),
       category: Object.keys(CATEGORY_OVERRIDES).filter((n) => !this.usedCategory.has(n)),
       season: Object.keys(SEASON_OVERRIDES).filter((n) => !this.usedSeason.has(n)),
     }

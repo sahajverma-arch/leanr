@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { CATEGORY_OVERRIDES, CurationOverrideTracker, SEASON_OVERRIDES } from "./recipe-curation-overrides"
+import { CATEGORY_OVERRIDES, CurationOverrideTracker, RETIRED_RECIPES, SEASON_OVERRIDES } from "./recipe-curation-overrides"
 import { recipeCategoryBucket } from "@/lib/plan/recipe-category"
 import { isMustHaveSatisfied } from "@/lib/plan/recipe-pairing"
 
@@ -101,5 +101,15 @@ describe("downstream effect of the corrections", () => {
   it("a legume curry already bucketed dal_curry by name keeps that bucket — the correction only adds category-text matching", () => {
     expect(recipeCategoryBucket("Sabzi", "Rajma Curry")).toBe("dal_curry")
     expect(recipeCategoryBucket(CATEGORY_OVERRIDES["Rajma Curry"].value, "Rajma Curry")).toBe("dal_curry")
+  })
+})
+
+describe("RETIRED_RECIPES", () => {
+  it("retires Sprout Chilla (same dish as Moong Dal Chilla) and nothing else by accident", () => {
+    const t = new CurationOverrideTracker()
+    expect(t.isRetired("Sprout Chilla")).toBe(true)
+    expect(t.isRetired("Moong Dal Chilla")).toBe(false)
+    expect(t.isRetired("Sprouted Black Chana Chilla")).toBe(false)
+    expect(t.unmatched().retired).toEqual(Object.keys(RETIRED_RECIPES).filter((n) => n !== "Sprout Chilla"))
   })
 })
