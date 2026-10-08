@@ -42,7 +42,11 @@ import {
 } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { weekTargets, type RoadmapResult } from "@/lib/counselling/roadmap"
-import { foodTargetsAfterSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
+import {
+  foodTargetsAfterSupplement,
+  supplementMissingFigures,
+  type PrescribedSupplement,
+} from "@/lib/counselling/supplement-adjusted-targets"
 import { isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { recipeDietViolations } from "@/lib/plan/recipe-diet-gate"
 import {
@@ -1027,6 +1031,13 @@ export async function POST(request: Request) {
         kcalPerServing: supplementRow.kcalPerServing,
       }
     : null
+  // A 0 g / 0 kcal prescription would be snapshotted onto the plan and shown
+  // in its banner while subtracting nothing — the plan looks like it accounts
+  // for the scoop and does not. Refuse rather than build it.
+  const supplementProblem = prescribedSupplement ? supplementMissingFigures(prescribedSupplement) : null
+  if (supplementProblem) {
+    return NextResponse.json({ error: `Supplement: ${supplementProblem}` }, { status: 422 })
+  }
   const { food: dailyTarget, warnings: supplementWarnings } = foodTargetsAfterSupplement(
     prescribedTarget,
     prescribedSupplement
@@ -1517,6 +1528,10 @@ export async function POST(request: Request) {
         // the week's average across all 7 days, not one day's snapshot.
         achieved: weeklyAverageAchieved,
         deviation: deviations,
+        // Snapshotted like the recipe path, so the plan banner and PDF show
+        // the scoop the targets above were reduced by.
+        supplement: prescribedSupplement,
+        targetOverride,
         generationMode: selectionResult.generationMode,
         modelUsed: selectionResult.modelUsed,
         preparedBy: user.id,

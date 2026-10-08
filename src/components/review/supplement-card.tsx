@@ -41,7 +41,23 @@ export function SupplementCard({ roadmapId, sessionId, current, restriction }: S
 
   const blocked = restriction === "allergy"
 
+  // An empty box used to be sent as Number("") = 0 and saved a supplement that
+  // subtracted nothing from the plan. Checked here, not only on the server,
+  // because Next.js hides a thrown Server Action message in production.
+  const proteinValue = Number(proteinG)
+  const kcalValue = Number(kcal)
+  const missingFigures =
+    proteinG.trim() === "" || !(proteinValue > 0)
+      ? "Enter the protein per serving from the tub's label."
+      : kcal.trim() === "" || !(kcalValue > 0)
+        ? "Enter the calories per serving from the tub's label."
+        : null
+
   function handleSave() {
+    if (missingFigures) {
+      toast.error(missingFigures)
+      return
+    }
     startTransition(async () => {
       try {
         await savePrescribedSupplement({
@@ -50,8 +66,8 @@ export function SupplementCard({ roadmapId, sessionId, current, restriction }: S
           name,
           servingLabel,
           servingsPerDay: Number(servingsPerDay),
-          proteinGPerServing: Number(proteinG),
-          kcalPerServing: Number(kcal),
+          proteinGPerServing: proteinValue,
+          kcalPerServing: kcalValue,
         })
         toast.success("Supplement saved — the food targets below now exclude it.")
       } catch (err) {
@@ -142,8 +158,15 @@ export function SupplementCard({ roadmapId, sessionId, current, restriction }: S
           </div>
         </div>
 
+        {current && (current.proteinGPerServing <= 0 || current.kcalPerServing <= 0) && (
+          <p className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm">
+            The saved supplement has <strong>no protein or calories entered</strong>, so it is not being taken off the
+            food targets. Enter both from the label and click Update. Plans already generated must be generated again.
+          </p>
+        )}
+
         <p className="text-xs text-muted-foreground">
-          Take these from the tub&apos;s own label. Both figures are subtracted from what the food plan has to supply,
+          Protein and calories are required. Take these from the tub&apos;s own label. Both figures are subtracted from what the food plan has to supply,
           so the client is not given a full day of food protein on top of the scoop.
         </p>
 

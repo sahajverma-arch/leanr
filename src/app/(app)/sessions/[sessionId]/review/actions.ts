@@ -1,6 +1,6 @@
 "use server"
 
-import { and, eq, inArray } from "drizzle-orm"
+import { and, desc, eq, inArray } from "drizzle-orm"
 import { z } from "zod"
 import { revalidatePath } from "next/cache"
 
@@ -39,11 +39,60 @@ export async function recomputeRoadmap(sessionId: string) {
   const roadmapInput = roadmapInputFromAnswers(session.answers as Answers)
   const output = roadmapFor(roadmapInput)
 
-  await db.insert(roadmaps).values({
-    sessionId,
-    engineVersion: ENGINE_VERSION,
-    input: roadmapInput,
-    output,
+  // The supplement and the hand-set week targets are attached to a roadmap
+  // row, so a recompute used to leave them behind on the old row: the review
+  // page and generation both read the newest roadmap, and the dietitian's
+  // decisions silently vanished from the plan. They are review-time choices,
+  // not part of the computed roadmap, so they move forward with it.
+  // Copied from the CURRENT roadmap only, never an older one, so something
+  // the dietitian removed does not come back.
+  const [current] = await db
+    .select({ id: roadmaps.id })
+    .from(roadmaps)
+    .where(eq(roadmaps.sessionId, sessionId))
+    .orderBy(desc(roadmaps.createdAt))
+    .limit(1)
+  const [previousSupplement] = current
+    ? await db.select().from(roadmapSupplements).where(eq(roadmapSupplements.roadmapId, current.id)).limit(1)
+    : []
+  const previousWeekTargets = current
+    ? await db.select().from(roadmapWeekTargets).where(eq(roadmapWeekTargets.roadmapId, current.id))
+    : []
+
+  await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(roadmaps)
+      .values({
+        sessionId,
+        engineVersion: ENGINE_VERSION,
+        input: roadmapInput,
+        output,
+      })
+      .returning({ id: roadmaps.id })
+    if (previousWeekTargets.length > 0) {
+      await tx.insert(roadmapWeekTargets).values(
+        previousWeekTargets.map((w) => ({
+          roadmapId: created.id,
+          weekNumber: w.weekNumber,
+          kcal: w.kcal,
+          proteinG: w.proteinG,
+          carbsG: w.carbsG,
+          createdBy: w.createdBy,
+        }))
+      )
+    }
+    if (previousSupplement) {
+      const s = previousSupplement
+      await tx.insert(roadmapSupplements).values({
+        roadmapId: created.id,
+        name: s.name,
+        servingLabel: s.servingLabel,
+        servingsPerDay: s.servingsPerDay,
+        proteinGPerServing: s.proteinGPerServing,
+        kcalPerServing: s.kcalPerServing,
+        createdBy: s.createdBy,
+      })
+    }
   })
 
   revalidatePath(`/sessions/${sessionId}/review`)
@@ -92,8 +141,16 @@ const supplementInputSchema = z.object({
   servingsPerDay: z.number().positive("Servings per day must be more than zero.").max(20),
   // Bounds are deliberately wide but finite: they catch a slipped decimal
   // point (240 instead of 24) without second-guessing a real product.
-  proteinGPerServing: z.number().min(0).max(200, "That is more protein than any real serving — check the label."),
-  kcalPerServing: z.number().min(0).max(2000, "That is more energy than any real serving — check the label."),
+  // Must be more than zero: an empty box used to arrive as 0 and save a
+  // supplement that subtracted nothing. See supplementMissingFigures().
+  proteinGPerServing: z
+    .number({ invalid_type_error: "Enter the protein per serving from the label." })
+    .positive("Enter the protein per serving from the label.")
+    .max(200, "That is more protein than any real serving — check the label."),
+  kcalPerServing: z
+    .number({ invalid_type_error: "Enter the calories per serving from the label." })
+    .positive("Enter the calories per serving from the label.")
+    .max(2000, "That is more energy than any real serving — check the label."),
 })
 
 export type SupplementInput = z.input<typeof supplementInputSchema>

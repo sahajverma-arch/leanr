@@ -2483,6 +2483,15 @@ answers, never snapshotted, so a correction takes effect immediately.
 **THE ONE RULE is untouched.** These are dietitian-entered figures off a product label. The LLM never
 sees them, never proposes them, and simply composes recipes against a smaller protein number.
 
+**Protein and kcal are required, and must be above 0 (2026-10-08).** The form's protein/kcal boxes
+started empty with "24"/"120" only as placeholder text, and an empty box was sent as `Number("") = 0`.
+Every supplement in the database had been saved as 0 g / 0 kcal: the banner said "0 g protein" and
+nothing was subtracted. Now the form and the server action both refuse 0, generation returns a 422
+for a 0-figure prescription (`supplementMissingFigures()`), and an old 0-figure plan's banner says
+it was not taken off the targets. **`recomputeRoadmap()` carries the supplement and every
+`roadmap_week_targets` row forward** from the current roadmap to the new one. Before, they stayed on
+the old row and silently disappeared from the review page and from generation.
+
 ## Dietitian-edited week targets (2026-09-23)
 
 The review page's next-4-weeks table has a pencil on each week row. It opens a side panel where the

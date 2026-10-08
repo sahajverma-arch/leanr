@@ -57,7 +57,23 @@ import {
 import { buildRecipeGuidelines } from "./recipe-guidelines"
 import { recipeItemToPlanViewItem } from "./recipe-view-adapter"
 import { TABLE_4_1, ZERO_COUNTS, type ExchangeCode, type ExchangeCounts } from "./table-4-1"
-import { describeSupplement, type PrescribedSupplement } from "@/lib/counselling/supplement-adjusted-targets"
+import {
+  describeSupplement,
+  supplementMissingFigures,
+  type PrescribedSupplement,
+} from "@/lib/counselling/supplement-adjusted-targets"
+
+/**
+ * Plans generated before the review form required protein and kcal carry a
+ * 0 g / 0 kcal snapshot: the scoop was never taken off the food targets.
+ * Say so on the banner rather than print "0 g protein" as if it were real.
+ */
+function supplementLineFor(supplement: PrescribedSupplement): string {
+  const line = describeSupplement(supplement)
+  return supplementMissingFigures(supplement)
+    ? `${line}. NOT taken off the food targets: protein and calories were never entered. Enter them on the review page and generate this week again.`
+    : line
+}
 
 export { CATEGORY_LABEL } from "./plan-guidelines"
 export type { GuidelineBullet, PlanViewDay, PlanViewItem, PlanViewMeal, RecipeItemEditing, WeeklySummaryRow } from "./plan-guidelines"
@@ -490,7 +506,7 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
       ...(foodRules.dayRules.incomplete ? [foodRules.dayRules.incomplete] : []),
       ...foodRules.dayRules.unchecked.map((u) => `Not checked automatically — check this plan by hand: ${u}`),
     ],
-    supplementLine: plan.supplement ? describeSupplement(plan.supplement as PrescribedSupplement) : null,
+    supplementLine: plan.supplement ? supplementLineFor(plan.supplement as PrescribedSupplement) : null,
     days,
     weeklySummary,
     weeklyAvg,

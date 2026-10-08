@@ -143,6 +143,22 @@ export function foodTargetsAfterSupplement(
   return { food: { kcal, proteinG, fatG, carbsG, fibreG: prescribed.fibreG }, supplement: totals, warnings }
 }
 
+/**
+ * A prescription whose label figures were never filled in. The review form
+ * used to start the protein and kcal boxes empty (with "24"/"120" only as
+ * grey placeholder text), and an empty box was saved as 0 — so every real
+ * prescription in the database had 0 g / 0 kcal, subtracted nothing, and the
+ * plan was built exactly as if there were no scoop. A protein supplement with
+ * no protein is never a real prescription, so this is refused, not guessed at.
+ */
+export function supplementMissingFigures(supplement: PrescribedSupplement): string | null {
+  if (supplement.proteinGPerServing > 0 && supplement.kcalPerServing > 0) return null
+  return (
+    `${supplement.name} has no protein or calories entered (${supplement.proteinGPerServing} g, ` +
+    `${supplement.kcalPerServing} kcal per serving). Enter both from the tub's label on the review page.`
+  )
+}
+
 /** One line for the plan banner and the PDF: what the client takes, and what it gives them. */
 export function describeSupplement(supplement: PrescribedSupplement): string {
   const totals = supplementDailyTotals(supplement)

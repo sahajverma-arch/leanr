@@ -4,6 +4,7 @@ import {
   describeSupplement,
   foodTargetsAfterSupplement,
   supplementDailyTotals,
+  supplementMissingFigures,
   type PrescribedSupplement,
 } from "./supplement-adjusted-targets"
 import type { WeekTargets } from "./roadmap"
@@ -99,5 +100,21 @@ describe("describeSupplement", () => {
     expect(describeSupplement({ ...WHEY, servingsPerDay: 2 })).toBe(
       "Daily: 2 × 1 scoop Whey protein — 48 g protein, 240 kcal"
     )
+  })
+})
+
+describe("supplementMissingFigures", () => {
+  it("accepts a prescription with both label figures", () => {
+    expect(supplementMissingFigures(WHEY)).toBeNull()
+  })
+
+  // Every real prescription saved before this check was 0 g / 0 kcal: the
+  // form's empty boxes were sent as 0 and the scoop subtracted nothing.
+  it("flags the 0 g / 0 kcal prescription an empty form used to save", () => {
+    expect(supplementMissingFigures({ ...WHEY, proteinGPerServing: 0, kcalPerServing: 0 })).toMatch(/no protein or calories/)
+  })
+
+  it("flags a missing kcal figure even when protein is entered", () => {
+    expect(supplementMissingFigures({ ...WHEY, kcalPerServing: 0 })).not.toBeNull()
   })
 })
