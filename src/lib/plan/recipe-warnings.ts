@@ -8,6 +8,7 @@
  * server env at module load. Same separation as recipe-day-diagnosis.ts.
  */
 
+import { describeMealBalanceProblems } from "./recipe-meal-balance"
 import { describeMacroProblems, RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { findBackToBackRepeats, findVarietyViolations } from "./recipe-variety-tracker"
@@ -56,7 +57,9 @@ export function offTargetSummary(
 export function buildRecipeWarnings(
   days: GroundedRecipeDay[],
   target: DailyRecipeTarget,
-  constraints: ClientRecipeConstraints
+  constraints: ClientRecipeConstraints,
+  /** The protein-rich meal for a given day, when a lunch/dinner swap moved it. Defaults to target.proteinRichSlot. */
+  proteinRichSlotForDay: (dayIndex: number) => string | undefined = () => target.proteinRichSlot
 ): string[] {
   const warnings: string[] = []
   const overused = findVarietyViolations(days)
@@ -66,6 +69,9 @@ export function buildRecipeWarnings(
       warnings.push(`Day ${day.dayIndex + 1}: ${problem}`)
     }
     for (const problem of describePlausibilityProblems(day, constraints)) {
+      warnings.push(`Day ${day.dayIndex + 1}: ${problem}`)
+    }
+    for (const problem of describeMealBalanceProblems(day, target.kcal, target.proteinG, proteinRichSlotForDay(day.dayIndex))) {
       warnings.push(`Day ${day.dayIndex + 1}: ${problem}`)
     }
     if (day.cappedRecipeNames.length > 0) {

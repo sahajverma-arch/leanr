@@ -8,7 +8,7 @@
 import { isAnimalProteinRecipe, isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { recipeAvoidanceConflict, type CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
-import { DAL_BUCKET, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MAX_SABZI_PER_MEAL, MEAT_CONFLICTING_BUCKETS, STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
+import { isCurryCourse, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MAX_CURRY_PER_MEAL, MEAT_CONFLICTING_BUCKETS, STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { isMustHaveSatisfied } from "./recipe-pairing"
 import type { GroundedRecipeDay } from "./recipe-types"
 import { recipeDayRuleViolation, type DayRestriction } from "./day-food-rules"
@@ -55,6 +55,14 @@ const MEAT_SATISFIES_MARKERS = new Set(["sabzi", "high protein sabzi", "dal", "c
 // (extra-meal-slots.ts).
 const NO_MAIN_REQUIRED_SLOTS = new Set(["wake_up", "mid_morning", "evening", "bedtime"])
 
+// The CSV says every Curd/Raita "must have" a Pulao, Khichdi or Biryani. The
+// dietitian's rule (2026-10-12) is the opposite: curd and salad are how a
+// roti-and-dal lunch or dinner is filled out to its calories, and curd with a
+// breakfast chilla or paratha is everyday food (the CSV itself lists Chila
+// and Thepla as good partners). So a raita's pairing requirement is waived in
+// any meal that has a staple, and at breakfast.
+const RAITA_CATEGORY = "raita"
+
 export function describePlausibilityProblems(day: GroundedRecipeDay, constraints: ClientRecipeConstraints): string[] {
   const problems: string[] = []
   const dayRestriction = constraints.dayRestrictions?.get(day.dayIndex)
@@ -76,6 +84,8 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
     let hasConflictingVegSideDish = false
     const liquidMainItemNames: string[] = []
     const itemBuckets: RecipeCategoryBucket[] = []
+    // The meal's cooked course(s): a dal, a vegetarian curry, a sabzi.
+    const curryCourseNames: string[] = []
 
     for (const item of meal.items) {
       if (namesSeen.has(item.recipe.name)) {
@@ -103,6 +113,7 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
       // count as "conflicting" with itself. Only a genuinely distinct,
       // non-animal-protein sabzi/dal item is the real conflict below.
       else if (MEAT_CONFLICTING_BUCKETS.has(bucket)) hasConflictingVegSideDish = true
+      if (!isAnimalProtein && isCurryCourse(item.recipe.category, bucket, item.recipe.carbsPer100G)) curryCourseNames.push(item.recipe.name)
 
       if (item.recipe.mainOrMid === "main") {
         hasMain = true
@@ -166,8 +177,8 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
         if (!itemBuckets.some((b) => STAPLE_BUCKETS.has(b))) {
           problems.push(`${meal.slot} is missing a staple dish (Roti/Paratha/Bread or Rice/Pulao/Biryani) — a real ${meal.slot} needs one`)
         }
-        if (!itemBuckets.includes(DAL_BUCKET) && !hasRealAnimalProtein) {
-          problems.push(`${meal.slot} is missing a Dal/Curry dish — a real ${meal.slot} needs one`)
+        if (curryCourseNames.length === 0 && !hasRealAnimalProtein) {
+          problems.push(`${meal.slot} is missing a Dal/Curry or Sabzi — a real ${meal.slot} needs a dal or a sabzi`)
         }
       } else if (itemBuckets.some((b) => STAPLE_BUCKETS.has(b))) {
         // The opposite mistake — a REDUNDANT staple bolted onto a dish
@@ -180,9 +191,11 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
         problems.push(`${meal.slot} pairs an already-complete dish with a separate staple (roti/rice) — real ${meal.slot}s don't serve these together; add a side instead, not another staple`)
       }
 
-      const sabziCount = itemBuckets.filter((b) => b === "sabzi").length
-      if (sabziCount > MAX_SABZI_PER_MEAL) {
-        problems.push(`${meal.slot} has ${sabziCount} sabzi dishes — serve one sabzi with one dal, not two sabzis`)
+      // One dal OR one sabzi, never both (recipe-meal-structure.ts).
+      if (curryCourseNames.length > MAX_CURRY_PER_MEAL) {
+        problems.push(
+          `${meal.slot} has ${curryCourseNames.length} dal/curry/sabzi dishes (${curryCourseNames.join(", ")}) — serve one dal OR one sabzi, and fill the meal out with roti/rice, salad or curd`
+        )
       }
 
       // Meat/fish/egg is its own protein-and-side course — never paired
@@ -223,6 +236,7 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
           item.recipe.mustHaveCategories.length > 0 &&
           item.recipe.mustHaveCategories.every((c) => MEAT_SATISFIES_MARKERS.has(c.toLowerCase()))
         if (hasRealAnimalProtein && onlyWantsProteinCourse) continue
+        if (item.recipe.category.trim().toLowerCase() === RAITA_CATEGORY && (meal.slot === "breakfast" || itemBuckets.some((b) => STAPLE_BUCKETS.has(b)))) continue
         const needs = [...item.recipe.mustHaveCategories, ...item.recipe.mustHaveRecipeNames].join(" / ")
         problems.push(`${meal.slot}'s "${item.recipe.name}" needs one of [${needs}] alongside it, but none is present`)
       }

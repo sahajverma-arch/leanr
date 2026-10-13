@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
 
 import { balanceDayToTargets } from "./recipe-balancer"
-import { buildRepairPool, enforceSingleSabzi, enforceVariety, repairDay, repairWeek, worstRelativeDeviation, REPAIR_TARGET_DEVIATION } from "./recipe-repair"
+import { buildRepairPool, enforceMealShape, enforceSingleCurry, enforceVariety, repairDay, repairWeek, swapMealContents, worstRelativeDeviation, REPAIR_TARGET_DEVIATION } from "./recipe-repair"
+import { mealShapeScore } from "./recipe-meal-balance"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { makeRecipe } from "./test-fixtures"
 import type { DailyRecipeTarget, GroundedRecipeDay, RecipeForPipeline } from "./recipe-types"
@@ -229,35 +230,112 @@ describe("enforceVariety", () => {
   })
 })
 
-describe("enforceSingleSabzi", () => {
+describe("enforceSingleCurry", () => {
   const target: DailyRecipeTarget = { kcal: 1800, proteinG: 70, carbsG: 230, fatG: 60, fiberG: 25 }
   const roti = pipeline(makeRecipe({ name: "Roti", category: "Roti", carbsPer100G: 45, proteinPer100G: 9, fatPer100G: 3 }))
   const paneer = pipeline(makeRecipe({ name: "Paneer Bhurji", category: "High Protein Sabzi", proteinPer100G: 14, fatPer100G: 12 }))
   const bhindi = pipeline(makeRecipe({ name: "Bhindi Masala", category: "Sabzi" }))
   const dal = pipeline(makeRecipe({ name: "Arhar Dal", category: "Dal", proteinPer100G: 7 }))
-  const porridge = pipeline(makeRecipe({ name: "Oats Porridge", category: "Dal Porridge" }))
-  const sabziCount = (day: GroundedRecipeDay) =>
-    day.meals[0].items.filter((i) => ["Sabzi", "High Protein Sabzi"].includes(i.recipe.category)).length
+  const curd = pipeline(makeRecipe({ name: "Curd", category: "Raita", mainOrMid: "mid", proteinPer100G: 4, carbsPer100G: 5, fatPer100G: 4 }))
+  const khichdi = pipeline(makeRecipe({ name: "Moong Khichdi", category: "Khichdi", carbsPer100G: 20, proteinPer100G: 5 }))
+  const kadhi = pipeline(makeRecipe({ name: "Kadhi", category: "Curry", proteinPer100G: 3 }))
+  const curryCount = (day: GroundedRecipeDay) =>
+    day.meals[0].items.filter((i) => ["Sabzi", "High Protein Sabzi", "Dal", "Curry"].includes(i.recipe.category)).length
 
-  it("drops the extra sabzi when the meal already has a dal", () => {
-    const day = makeDay([roti, paneer, bhindi, dal], target, "lunch")
-    const result = enforceSingleSabzi(day, target, buildRepairPool([roti, paneer, bhindi, dal]), new Map())
-    expect(sabziCount(result.day)).toBe(1)
-    expect(result.day.meals[0].items.some((i) => i.recipe.name === "Arhar Dal")).toBe(true)
+  it("keeps ONE dal or ONE sabzi: dal + sabzi becomes one of them", () => {
+    const day = makeDay([roti, bhindi, dal], target, "lunch")
+    const result = enforceSingleCurry(day, target, buildRepairPool([roti, bhindi, dal]), constraints, new Map())
+    expect(curryCount(result.day)).toBe(1)
     expect(result.swaps).toHaveLength(1)
   })
 
-  it("turns the extra sabzi into a dal (never a porridge) when the meal has none", () => {
-    const day = makeDay([roti, paneer, bhindi], target, "dinner")
-    const result = enforceSingleSabzi(day, target, buildRepairPool([roti, paneer, bhindi, dal, porridge]), new Map())
-    expect(sabziCount(result.day)).toBe(1)
-    const names = result.day.meals[0].items.map((i) => i.recipe.name)
-    expect(names).not.toContain("Oats Porridge")
-    expect(names.includes("Arhar Dal") || result.swaps[0].to.startsWith("(removed")).toBe(true)
+  it("brings two sabzis and a dal down to one", () => {
+    const day = makeDay([roti, paneer, bhindi, dal], target, "dinner")
+    const result = enforceSingleCurry(day, target, buildRepairPool([roti, paneer, bhindi, dal]), constraints, new Map())
+    expect(curryCount(result.day)).toBe(1)
+    expect(result.swaps).toHaveLength(2)
+  })
+
+  it("may turn the extra curry into curd/salad instead of only dropping it", () => {
+    const day = makeDay([roti, bhindi, dal], target, "lunch")
+    const result = enforceSingleCurry(day, target, buildRepairPool([roti, bhindi, dal, curd]), constraints, new Map())
+    expect(curryCount(result.day)).toBe(1)
+    const to = result.swaps[0].to
+    expect(to === "Curd" || to.startsWith("(removed")).toBe(true)
+  })
+
+  it("does not count a self-contained khichdi: khichdi + kadhi is a valid dinner", () => {
+    const day = makeDay([khichdi, kadhi], target, "dinner")
+    expect(enforceSingleCurry(day, target, buildRepairPool([khichdi, kadhi]), constraints, new Map()).swaps).toEqual([])
   })
 
   it("leaves breakfast and snacks alone", () => {
     const day = makeDay([paneer, bhindi], target, "evening")
-    expect(enforceSingleSabzi(day, target, buildRepairPool([paneer, bhindi, dal]), new Map()).swaps).toEqual([])
+    expect(enforceSingleCurry(day, target, buildRepairPool([paneer, bhindi, dal]), constraints, new Map()).swaps).toEqual([])
+  })
+})
+
+describe("enforceMealShape", () => {
+  const target: DailyRecipeTarget = { kcal: 1500, proteinG: 70, carbsG: 190, fatG: 50, fiberG: 25 }
+  const chilla = pipeline(makeRecipe({ name: "Besan Chilla", category: "Chila", proteinPer100G: 10, carbsPer100G: 20, fatPer100G: 6, minGrams: 50, idealGrams: 80, maxGrams: 100 }))
+  const curd = pipeline(makeRecipe({ name: "Curd", category: "Raita", mainOrMid: "mid", proteinPer100G: 4, carbsPer100G: 5, fatPer100G: 4, minGrams: 100, idealGrams: 150, maxGrams: 250 }))
+  const roti = pipeline(makeRecipe({ name: "Roti", category: "Roti", proteinPer100G: 9, carbsPer100G: 45, fatPer100G: 3, minGrams: 40, idealGrams: 80, maxGrams: 160 }))
+  const dal = pipeline(makeRecipe({ name: "Arhar Dal", category: "Dal", proteinPer100G: 7, carbsPer100G: 12, fatPer100G: 3, minGrams: 150, idealGrams: 200, maxGrams: 300 }))
+  const rice = pipeline(makeRecipe({ name: "Rice", category: "Rice", proteinPer100G: 3, carbsPer100G: 28, fatPer100G: 0.3, minGrams: 150, idealGrams: 200, maxGrams: 350 }))
+  const paneer = pipeline(makeRecipe({ name: "Paneer Bhurji", category: "High Protein Sabzi", proteinPer100G: 14, carbsPer100G: 6, fatPer100G: 12, minGrams: 100, idealGrams: 150, maxGrams: 250 }))
+
+  function threeMealDay(): GroundedRecipeDay {
+    const meals = [
+      { slot: "breakfast", items: [chilla] },
+      { slot: "lunch", items: [roti, dal] },
+      { slot: "dinner", items: [rice, paneer] },
+    ].map((m) => ({ slot: m.slot, items: m.items.map((recipe) => ({ recipe, grams: recipe.idealGrams })) }))
+    return { dayIndex: 0, meals, totals: { kcal: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0 }, cappedRecipeNames: [], unknownRecipeNames: [] }
+  }
+
+  it("fills out a breakfast too light to reach an equal share", () => {
+    const day = balanceDayToTargets(threeMealDay(), target)
+    const before = mealShapeScore(day, target)
+    const result = enforceMealShape(day, target, buildRepairPool([chilla, curd, roti, dal, rice, paneer]), constraints, new Map())
+    expect(mealShapeScore(result.day, target)).toBeLessThan(before)
+    expect(result.swaps.length).toBeGreaterThan(0)
+  })
+
+  it("swaps lunch and dinner whole when the protein dish is at the wrong one", () => {
+    const richTarget = { ...target, proteinRichSlot: "lunch" }
+    const bhindi = pipeline(makeRecipe({ name: "Bhindi Masala", category: "Sabzi", proteinPer100G: 2, carbsPer100G: 8, fatPer100G: 5, minGrams: 100, idealGrams: 150, maxGrams: 250 }))
+    const base = threeMealDay()
+    base.meals[1] = { slot: "lunch", items: [roti, bhindi].map((recipe) => ({ recipe, grams: recipe.idealGrams })) }
+    const day = balanceDayToTargets(base, richTarget)
+    const result = enforceMealShape(day, richTarget, buildRepairPool([chilla, curd, roti, dal, rice, paneer]), constraints, new Map())
+    const lunch = result.day.meals.find((m) => m.slot === "lunch")!
+    expect(lunch.items.some((i) => i.recipe.name === "Paneer Bhurji")).toBe(true)
+  })
+
+  it("never touches a day with a hand-locked quantity", () => {
+    const day = threeMealDay()
+    day.meals[0].items[0] = { ...day.meals[0].items[0], gramsLocked: true }
+    expect(enforceMealShape(day, target, buildRepairPool([chilla, curd]), constraints, new Map()).swaps).toEqual([])
+  })
+})
+
+describe("swapMealContents", () => {
+  it("exchanges two meals' dishes and keeps the slots in place", () => {
+    const a = pipeline(makeRecipe({ name: "A", category: "Dal" }))
+    const b = pipeline(makeRecipe({ name: "B", category: "Sabzi" }))
+    const day: GroundedRecipeDay = {
+      dayIndex: 0,
+      meals: [
+        { slot: "lunch", items: [{ recipe: a, grams: 100 }] },
+        { slot: "dinner", items: [{ recipe: b, grams: 200 }] },
+      ],
+      totals: { kcal: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0 },
+      cappedRecipeNames: [],
+      unknownRecipeNames: [],
+    }
+    const swapped = swapMealContents(day, 0, 1)
+    expect(swapped.meals.map((m) => m.slot)).toEqual(["lunch", "dinner"])
+    expect(swapped.meals[0].items[0].recipe.name).toBe("B")
+    expect(swapped.meals[1].items[0].grams).toBe(100)
   })
 })

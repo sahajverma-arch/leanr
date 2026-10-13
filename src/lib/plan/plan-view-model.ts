@@ -13,6 +13,7 @@
  * tested directly; this file is the DB-touching orchestrator around it.
  */
 
+import { effectiveProteinRichSlot } from "./recipe-meal-balance"
 import { asc, eq, inArray } from "drizzle-orm"
 
 import { db } from "@/db"
@@ -352,11 +353,14 @@ export async function loadPlanViewModel(planId: string): Promise<PlanViewModel> 
       calPercent: dayTotals.kcal > 0 ? (m.totals.kcal / dayTotals.kcal) * 100 : 0,
     }))
     return {
+      id: day.id,
       dayIndex: day.dayIndex,
       date: day.date,
       dateLabel: dateLabel(day.date),
       meals: mealsWithPct,
       totals: dayTotals,
+      proteinRichSlot: effectiveProteinRichSlot(plan.proteinRichSlot, day.lunchDinnerSwapped),
+      lunchDinnerSwapped: day.lunchDinnerSwapped,
     }
   })
 

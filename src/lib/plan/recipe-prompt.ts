@@ -10,6 +10,7 @@
 import { describeAvoids, type DayRestriction } from "./day-food-rules"
 import type { RetrievedDietPlanExample } from "./diet-plan-example-retrieval"
 import type { RetrievedKnowledgeChunk } from "./knowledge-retrieval"
+import { isMainMealSlot, mainMealLabel, PROTEIN_RICH_SHARE } from "./recipe-meal-balance"
 import { formatSlotStructureRules } from "./recipe-meal-structure"
 import type { DailyRecipeTarget, GroundedRecipeDay, RecipeForPrompt, RecipeSelectorInput } from "./recipe-types"
 import { buildWeekRotation, formatRotationSection, recentDishNames, seededShuffle } from "./recipe-week-rotation"
@@ -37,7 +38,10 @@ Rules:
 // diagnostics) — keeps the table's other rows exactly as before this layer
 // existed, rather than adding two mostly-empty columns to every row.
 function formatPairingSuffix(r: RecipeForPrompt): string {
-  const needs = [...r.mustHaveCategories, ...r.mustHaveRecipeNames]
+  // Curd/raita beside roti or a breakfast chilla is the dietitian's own rule,
+  // so the CSV's "needs Pulao/Khichdi/Biryani" is waived by the validator
+  // (recipe-plausibility-validate.ts) and must not steer the model away.
+  const needs = r.category.trim().toLowerCase() === "raita" ? [] : [...r.mustHaveCategories, ...r.mustHaveRecipeNames]
   const goodWith = [...r.goodToHaveCategories, ...r.goodToHaveRecipeNames]
   const parts: string[] = []
   if (needs.length > 0) parts.push(`needs: ${needs.join("/")}`)
@@ -76,6 +80,28 @@ function formatDailyTarget(target: DailyRecipeTarget): string {
 }
 
 /**
+ * Breakfast, lunch and dinner are equal in calories, and the dietitian may
+ * pick one of them to be protein-rich (recipe-meal-balance.ts). Descriptive
+ * only: the model still names dishes, recipe-balancer.ts sets every gram, and
+ * recipe-repair.ts's enforceMealShape() fixes what the choice of dishes gets
+ * wrong. "" when the day has fewer than two main meals.
+ */
+export function formatMealBalanceSection(slotNames: string[], target: DailyRecipeTarget): string {
+  const mains = slotNames.filter(isMainMealSlot)
+  if (mains.length < 2) return ""
+  const lines = [
+    `- ${mains.map(mainMealLabel).join(", ")} must be roughly EQUAL in calories — each is a full meal of about the same size. Breakfast is not a light snack: give it a staple plus a protein dish or curd (two chillas or parathas with curd, poha with sprouts, eggs with toast), never a single light item or a drink alone. The small in-between meals stay small.`,
+  ]
+  const rich = target.proteinRichSlot && isMainMealSlot(target.proteinRichSlot) ? target.proteinRichSlot : null
+  if (rich) {
+    lines.push(
+      `- The dietitian has made ${rich.toUpperCase()} the PROTEIN-RICH meal: every day, put the day's most protein-dense dish there (paneer, tofu, soya, egg, chicken, fish, rajma/chole, sprouts, a high-protein dal, curd) so that ${rich} carries the most protein of the three — at least ${Math.round(PROTEIN_RICH_SHARE * 100)}% of the day's protein. The other main meals still have some protein, just less.`
+    )
+  }
+  return `\nMeal balance (checked automatically):\n${lines.join("\n")}\n`
+}
+
+/**
  * How a home lunch and dinner are built in each region, in terms of dishes
  * the pool actually has under generic names (roti, dal, rice, sabzi, kadhi).
  * Needed because the dataset's regional recipes are almost all breakfast or
@@ -86,21 +112,21 @@ function formatDailyTarget(target: DailyRecipeTarget): string {
  */
 const REGIONAL_MEAL_PATTERNS: Record<string, string> = {
   Gujarati:
-    "A Gujarati home lunch is rotli (roti) + dal + bhaat (rice) + a simple shaak (vegetable sabzi — lauki, bhindi, tindora, cabbage, brinjal, potato), often with kadhi and chaas. Dinner is lighter: khichdi with kadhi, or thepla/bhakri with shaak. Breakfast and evening are farsan and flatbreads: thepla, dhokla, khandvi, handvo, muthiya, khakhra.",
+    "A Gujarati home lunch is rotli (roti) and/or bhaat (rice) + ONE dal or kadhi OR ONE simple shaak (vegetable sabzi — lauki, bhindi, tindora, cabbage, brinjal, potato), with salad, curd or chaas. Dinner is lighter: khichdi with kadhi, or thepla/bhakri with shaak. Breakfast and evening are farsan and flatbreads: thepla, dhokla, khandvi, handvo, muthiya, khakhra.",
   "North Indian":
-    "A North Indian home lunch/dinner is roti (plain, missi, bajra, jowar or multigrain) or rice + a dal or curry + a sabzi, with raita, curd or salad. The dal changes through the week — arhar, moong, masoor, urad, chana dal, dal palak, kadhi, rajma, chole — and so does the sabzi. Breakfast rotates between parathas, chillas, poha, upma, dalia and oats.",
+    "A North Indian home lunch/dinner is roti (plain, missi, bajra, jowar or multigrain) and/or rice + ONE dal or curry OR ONE sabzi, with raita, curd or salad. The dal changes through the week — arhar, moong, masoor, urad, chana dal, dal palak, kadhi, rajma, chole — and so does the sabzi; a sabzi meal suits roti, a dal meal suits rice or roti. Breakfast rotates between parathas, chillas, poha, upma, dalia and oats.",
   Punjabi:
-    "A Punjabi home lunch/dinner is roti or paratha + dal (dal makhani, rajma, chole) + a sabzi, with lassi, curd or raita. Breakfast is paratha with curd.",
+    "A Punjabi home lunch/dinner is roti or paratha + ONE dal (dal makhani, rajma, chole) OR ONE sabzi, with lassi, curd, raita or salad. Breakfast is paratha with curd.",
   Rajasthani:
-    "A Rajasthani home lunch/dinner is bajra or wheat roti + dal or kadhi + a dry sabzi (gatte, ker sangri style), with chaas. Breakfast is paratha, poha or cheela.",
+    "A Rajasthani home lunch/dinner is bajra or wheat roti + ONE dal or kadhi OR ONE dry sabzi (gatte, ker sangri style), with chaas, curd or salad. Breakfast is paratha, poha or cheela.",
   "South Indian":
-    "A South Indian home lunch is rice with sambar or rasam + a poriyal/thoran (dry vegetable) + curd or curd rice. Breakfast and dinner are idli, dosa, uttapam, upma or pongal with sambar/chutney.",
+    "A South Indian home lunch is rice with ONE sambar/rasam OR ONE poriyal/thoran (dry vegetable), with curd and salad. Breakfast and dinner are idli, dosa, uttapam, upma or pongal with sambar/chutney.",
   Maharashtrian:
-    "A Maharashtrian home lunch/dinner is poli (roti) or bhakri + varan/amti (dal) + bhaji (vegetable) + rice, sometimes usal. Breakfast is poha, upma, thalipeeth or sabudana.",
+    "A Maharashtrian home lunch/dinner is poli (roti) or bhakri and/or rice + ONE varan/amti (dal) or usal OR ONE bhaji (vegetable), with koshimbir (salad) or curd. Breakfast is poha, upma, thalipeeth or sabudana.",
   Bengali:
-    "A Bengali home lunch is rice + dal + a vegetable torkari or bhaja, with fish curry only for non-vegetarian clients. Dinner is often roti with torkari. Breakfast is luchi-style breads, chire (poha) or muri.",
+    "A Bengali home lunch is rice + ONE dal OR ONE vegetable torkari, with salad or curd; fish curry (non-vegetarian clients only) replaces the dal/torkari. Dinner is often roti with torkari. Breakfast is luchi-style breads, chire (poha) or muri.",
   Hyderabadi:
-    "A Hyderabadi/Telugu home lunch is rice + pappu (dal) or sambar + a vegetable curry, with curd. Breakfast is idli, dosa, upma or pesarattu.",
+    "A Hyderabadi/Telugu home lunch is rice + ONE pappu (dal) or sambar OR ONE vegetable curry, with curd and salad. Breakfast is idli, dosa, upma or pesarattu.",
 }
 
 /**
@@ -207,7 +233,7 @@ export function buildInitialMessages(input: RecipeSelectorInput, attemptNumber =
   const userContent = `Client profile: diet type "${input.dietType}", cuisine "${input.cuisine}", ${input.mealCount} meals/day.
 Meal slots, in order: ${slotsLine}.
 Daily targets (average across the week): ${formatDailyTarget(input.dailyTarget)}.${previousDayNote}${formatDayRestrictionsSection(input.dayRestrictions)}
-${formatSlotStructureRules(input.slots.map((s) => s.slot))}
+${formatSlotStructureRules(input.slots.map((s) => s.slot))}${formatMealBalanceSection(input.slots.map((s) => s.slot), input.dailyTarget)}
 Available recipes (choose ONLY from this list, copying the Name column EXACTLY):
 ${formatRecipeTable(table)}
 ${formatRegionalSection(input.cuisine, input.eligibleRecipesForPrompt)}${rotationSection}${formatKnowledgeSection(input.knowledgeChunks)}
@@ -239,7 +265,7 @@ ${diagnoses.map((d) => `- ${d}`).join("\n")}
 
 Daily targets: ${formatDailyTarget(input.dailyTarget)}${formatDayRestrictionsSection(input.dayRestrictions, day.dayIndex)}
 Meal slots, in order: ${slotsLine}.
-${formatSlotStructureRules(input.slots.map((s) => s.slot))}
+${formatSlotStructureRules(input.slots.map((s) => s.slot))}${formatMealBalanceSection(input.slots.map((s) => s.slot), input.dailyTarget)}
 Available recipes (choose ONLY from this list, copying the Name column EXACTLY):
 ${formatRecipeTable(table)}
 ${formatRegionalSection(input.cuisine, input.eligibleRecipesForPrompt)}${rotationSection}${formatKnowledgeSection(input.knowledgeChunks)}

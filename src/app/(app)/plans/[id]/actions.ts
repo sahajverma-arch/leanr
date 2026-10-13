@@ -610,3 +610,68 @@ export async function setMealNote(
   revalidatePath("/clients", "layout")
   return { ok: true, mealsUpdated }
 }
+
+export type SwapLunchAndDinnerResult = { ok: true; daysSwapped: number } | { ok: false; error: string }
+
+/**
+ * Swap a day's lunch and dinner — the whole plates, with their notes — or do
+ * it on every day of the week (`dayId` null). The two diet_plan_meals rows
+ * simply exchange their slot and slot order, so every dish, gram and note
+ * moves with its meal and nothing is recomputed from scratch.
+ *
+ * The day's totals cannot change (the same food is eaten that day), and
+ * breakfast/lunch/dinner stay equal in calories since lunch and dinner aim
+ * at the same share. diet_plan_days.lunch_dinner_swapped is toggled so the
+ * protein-rich meal follows its food: if lunch was protein-rich, after the
+ * swap that day's protein-rich plate is at dinner, and later edits re-balance
+ * it there. The plan's figures and warnings are then recomputed through the
+ * same tail every other edit uses.
+ *
+ * Recipe-engine plans only: the exchange engine pins meal-specific exchange
+ * types to a slot (curd at lunch/dinner, real meat at dinner), which a blind
+ * swap would break. Errors are returned, not thrown, because Next.js hides a
+ * thrown Server Action message in production.
+ */
+export async function swapLunchAndDinner(planId: string, dayId: string | null): Promise<SwapLunchAndDinnerResult> {
+  await requireStaffUser()
+  planId = uuidSchema.parse(planId)
+  const onlyDayId = dayId === null ? null : uuidSchema.parse(dayId)
+
+  const [plan] = await db.select().from(dietPlans).where(eq(dietPlans.id, planId)).limit(1)
+  if (!plan) return { ok: false, error: "Plan not found." }
+  if (plan.status === "approved") return { ok: false, error: "This plan is already approved - edits are locked." }
+  if (plan.engine !== "recipe") return { ok: false, error: "Lunch and dinner can only be swapped on a recipe plan." }
+
+  const dayRows = await db
+    .select()
+    .from(dietPlanDays)
+    .where(onlyDayId ? and(eq(dietPlanDays.dietPlanId, planId), eq(dietPlanDays.id, onlyDayId)) : eq(dietPlanDays.dietPlanId, planId))
+  if (dayRows.length === 0) return { ok: false, error: "Day not found." }
+  const mealRows = await db
+    .select()
+    .from(dietPlanMeals)
+    .where(and(inArray(dietPlanMeals.dietPlanDayId, dayRows.map((d) => d.id)), inArray(dietPlanMeals.slot, ["lunch", "dinner"])))
+
+  const pairs = dayRows.flatMap((day) => {
+    const lunch = mealRows.find((m) => m.dietPlanDayId === day.id && m.slot === "lunch")
+    const dinner = mealRows.find((m) => m.dietPlanDayId === day.id && m.slot === "dinner")
+    return lunch && dinner ? [{ day, lunch, dinner }] : []
+  })
+  if (pairs.length === 0) return { ok: false, error: "This day has no lunch and dinner to swap." }
+
+  const loaded = await loadRecipeMealContext(pairs[0].lunch.id)
+  if (!loaded) return { ok: false, error: "Could not load this plan's targets." }
+
+  await db.transaction(async (tx) => {
+    for (const { day, lunch, dinner } of pairs) {
+      await tx.update(dietPlanMeals).set({ slot: "dinner", slotOrder: dinner.slotOrder }).where(eq(dietPlanMeals.id, lunch.id))
+      await tx.update(dietPlanMeals).set({ slot: "lunch", slotOrder: lunch.slotOrder }).where(eq(dietPlanMeals.id, dinner.id))
+      await tx.update(dietPlanDays).set({ lunchDinnerSwapped: !day.lunchDinnerSwapped }).where(eq(dietPlanDays.id, day.id))
+    }
+    await recomputePlanAfterEdit(tx, loaded.ctx)
+  })
+
+  revalidatePath(`/plans/${planId}`)
+  revalidatePath("/clients", "layout")
+  return { ok: true, daysSwapped: pairs.length }
+}

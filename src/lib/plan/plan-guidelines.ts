@@ -124,11 +124,17 @@ export interface PlanViewMeal {
 }
 
 export interface PlanViewDay {
+  /** diet_plan_days.id — the target for "swap lunch and dinner". Optional so test fixtures need not invent one. */
+  id?: string
   dayIndex: number
   date: string
   dateLabel: string
   meals: PlanViewMeal[]
   totals: AchievedMacros
+  /** This day's protein-rich meal, after any lunch/dinner swap (recipe-meal-balance.ts). Absent = none chosen. */
+  proteinRichSlot?: string
+  /** The dietitian swapped this day's lunch and dinner on the plan page. */
+  lunchDinnerSwapped?: boolean
 }
 
 export interface WeeklySummaryRow {

@@ -41,6 +41,7 @@ import type { Season } from "@/lib/foods/vocab"
 import { clientFoodRules, recipeRuleViolation, type ClientFoodRules } from "@/lib/plan/client-food-rules"
 import { restrictionsForWeek } from "@/lib/plan/day-food-rules"
 import type { CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
+import { effectiveProteinRichSlot, isMainMealSlot } from "./recipe-meal-balance"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { deviationOf, rebalanceDay, weeklyAverageOf, type StoredRecipeMeal } from "./recipe-swap"
 import { RECIPE_PIPELINE_COLUMNS, type DailyRecipeTarget, type RecipeForPipeline } from "./recipe-types"
@@ -114,7 +115,16 @@ async function contextForPlan(plan: typeof dietPlans.$inferSelect): Promise<Reci
     status: plan.status,
     dietType: plan.dietType,
     cuisine,
-    target: { kcal: food.kcal, proteinG: food.proteinG, carbsG: food.carbsG, fatG: food.fatG, fiberG: food.fibreG },
+    target: {
+      kcal: food.kcal,
+      proteinG: food.proteinG,
+      carbsG: food.carbsG,
+      fatG: food.fatG,
+      fiberG: food.fibreG,
+      // The plan's own snapshot, as generated. A day whose lunch and dinner
+      // were swapped moves it: see targetForDay().
+      ...(plan.proteinRichSlot && isMainMealSlot(plan.proteinRichSlot) ? { proteinRichSlot: plan.proteinRichSlot } : {}),
+    },
     allergenTags,
     avoidTerms,
     rules,
@@ -127,6 +137,11 @@ async function contextForPlan(plan: typeof dietPlans.$inferSelect): Promise<Reci
       dayRestrictions: restrictionsForWeek(rules.dayRules, plan.weekStart),
     },
   }
+}
+
+/** The target one day is balanced against: the plan's, with the protein-rich meal following a lunch/dinner swap. */
+export function targetForDay(target: DailyRecipeTarget, lunchDinnerSwapped: boolean): DailyRecipeTarget {
+  return { ...target, proteinRichSlot: effectiveProteinRichSlot(target.proteinRichSlot, lunchDinnerSwapped) }
 }
 
 /** Context for an edit addressed by ITEM id (delete, quantity, swap). Null when the id is not a recipe item. */
@@ -266,7 +281,7 @@ export async function recomputePlanAfterEdit(tx: PlanTx, ctx: RecipePlanContext)
           })),
       }))
 
-    const balanced = rebalanceDay(dayRow.dayIndex, meals, ctx.target)
+    const balanced = rebalanceDay(dayRow.dayIndex, meals, targetForDay(ctx.target, dayRow.lunchDinnerSwapped))
     balancedDays.push(balanced)
 
     const flatStored = meals.flatMap((m) => m.items)
@@ -298,7 +313,10 @@ export async function recomputePlanAfterEdit(tx: PlanTx, ctx: RecipePlanContext)
   // fix a macro miss or empty a meal, and the page must stop - or start -
   // saying so.
   const achieved = weeklyAverageOf(balancedDays.map((d) => d.totals))
-  const warnings = buildRecipeWarnings(balancedDays, ctx.target, ctx.constraints)
+  const swappedByDayIndex = new Map(dayRows.map((d) => [d.dayIndex, d.lunchDinnerSwapped]))
+  const warnings = buildRecipeWarnings(balancedDays, ctx.target, ctx.constraints, (dayIndex) =>
+    effectiveProteinRichSlot(ctx.target.proteinRichSlot, swappedByDayIndex.get(dayIndex) ?? false)
+  )
   const summary = offTargetSummary(achieved, ctx.target, balancedDays.length)
   if (summary) warnings.unshift(summary)
 

@@ -29,6 +29,7 @@ import { recipeDayRuleViolation, WEEKDAY_NAMES, type DayFoodRules } from "./day-
 import { balanceDayToTargets } from "./recipe-balancer"
 import { computeMealsTotals } from "./recipe-grounding"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
+import { describeMealBalanceProblems } from "./recipe-meal-balance"
 import type { DailyRecipeTarget, GroundedRecipeDay, MealSlotInfo, RecipeForPipeline } from "./recipe-types"
 import { describeMacroProblems } from "./recipe-validate"
 
@@ -143,6 +144,7 @@ export function fixedMenuWarnings(day: GroundedRecipeDay, target: DailyRecipeTar
   const warnings = [
     ...describeMacroProblems(day.totals, target).map((p) => `Every day: ${p}`),
     ...describePlausibilityProblems(day, constraints).map((p) => `Every day: ${p}`),
+    ...describeMealBalanceProblems(day, target.kcal, target.proteinG, target.proteinRichSlot).map((p) => `Every day: ${p}`),
   ]
   if (warnings.length > 0) {
     warnings.unshift(

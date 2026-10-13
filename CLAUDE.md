@@ -1489,6 +1489,7 @@ re-measured by replaying the production balance + `repairWeek()` over the same d
    one). `MAX_SABZI_PER_MEAL = 1`: a plausibility problem, a prompt rule, and
    `enforceSingleSabzi()` at the start of `repairWeek()` — the extra sabzi becomes a dal/curry if the
    meal has none, else it is dropped, and the day is re-balanced. Mandatory, not macro-gated.
+   **Superseded 2026-10-12** by "one dal OR one sabzi" — see "Meal balance" below.
 3. **One roti as lunch.** A roti's authored minimum is one piece and the balancer parked 109 of 203
    servings there. `getMealServingLimitsG()` raises the minimum to `MIN_ROTIS_AS_ONLY_STAPLE` (2)
    pieces when roti is a lunch/dinner's only staple (not when rice is also served), never past the
@@ -1498,6 +1499,47 @@ re-measured by replaying the production balance + `repairWeek()` over the same d
 7 -> 0; roti-only meals under 2 rotis -> 4 of 181 (dishes whose max is under two pieces); weeks
 passing 26 -> 27; days within ±8% 188 -> 188 (192 with the range fix alone; the 2-roti floor costs
 those 4).
+
+### Meal balance: equal main meals, one dal or sabzi, protein-rich meal, lunch/dinner swap (2026-10-12)
+
+"Phase two", four dietitian asks. Migration `20261012120000_protein_rich_meal_and_lunch_dinner_swap.sql`.
+
+1. **Breakfast, lunch and dinner carry equal calories.** Snacks keep what they get; the three main
+   meals split the rest evenly (`recipe-meal-balance.ts`). `recipe-balancer.ts` adds a least-squares
+   term per main meal pulling it to that share, so every path (generation, edits, fixed menu) gets it.
+   Grams alone could not get there: the typical miss was a breakfast of one chilla capped at ~110 g
+   (~220 kcal against a ~450 share). So `recipe-repair.ts` `enforceMealShape()` (end of `repairDay()`)
+   changes dishes: a same-`varietyFamily()` swap, or ADDING curd/salad to lunch/dinner, rice beside a
+   roti-only plate (or roti beside rice), curd at breakfast — each accepted only if it narrows the gap,
+   adds no plausibility problem, respects the repeat cap, and keeps the worst macro within 6% or no
+   worse. The prompt says it too. What is left is a **warning**, never a reject (the gate is still the
+   weekly macro average).
+2. **Lunch/dinner: ONE dal OR ONE sabzi, never both** (replaces "one sabzi with one dal"), plus a
+   staple (roti and/or rice), filled out with salad and curd. `MAX_CURRY_PER_MEAL`; a self-contained
+   khichdi is not counted (khichdi + kadhi stays valid); a meat dish is still its own protein course.
+   `enforceSingleCurry()` drops the extra curry or turns it into a salad/curd, whichever fits the day.
+   **The CSV's "Curd/Raita must have Pulao/Khichdi/Biryani" is waived** when the meal has a staple or
+   is breakfast (validator + prompt), since curd beside roti is exactly what was asked for.
+3. **Protein-rich meal**, picked on the review page (`client_fixed_menus.protein_rich_slot`, per
+   client like the extra slots; snapshotted to `diet_plans.protein_rich_slot`). Carried as
+   `DailyRecipeTarget.proteinRichSlot`, so prompt, balancer and repair all read one value. The meal
+   should carry the most protein of the three and at least `PROTEIN_RICH_SHARE` (35%) of the day's.
+   The balancer's floor term is scaled to the meal-kcal term: in raw units it was ~20x weaker and
+   moved nothing. `enforceMealShape()` may also swap the lunch and dinner plates whole. Its score is
+   the SUM of the kcal gap and the protein shortfall — with a max, a protein fix scored zero while
+   breakfast was still light and was never taken.
+4. **Swap lunch and dinner** on the plan page (one day or every day), recipe plans only: the two
+   `diet_plan_meals` rows exchange slot and slot order, so dishes, grams and notes move together, and
+   `diet_plan_days.lunch_dinner_swapped` is toggled so the protein-rich meal follows its food in later
+   re-balances (`targetForDay()`, `effectiveProteinRichSlot()`). Not offered on exchange plans, which
+   pin exchange types to slots.
+
+**Replay over the 41 saved recipe plans** (`scripts/measure-meal-balance.ts [--rich=lunch]`, no
+writes): days with all three main meals within 15% of the equal share 11 -> 191 of 287 (median worst
+gap 51% -> 10%); days within ±8% 250 -> 255; weeks passing 36 -> 36. With lunch protein-rich: lunch
+has the most protein on 234/287 days (stored plans: 163). These are old dish sets chosen without
+either rule; a live generation, prompted for them, should do better — not yet measured live. Cost:
+repair CPU ~0.6 -> ~1.4 s per week, times N for best-of-N.
 
 ### Weekday food rules are enforced (2026-10-01)
 

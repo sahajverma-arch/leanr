@@ -5,6 +5,7 @@ import { z } from "zod"
 import { revalidatePath } from "next/cache"
 
 import { db } from "@/db"
+import { MAIN_MEAL_SLOTS } from "@/lib/plan/recipe-meal-balance"
 import { clientFixedMenus, counsellingSessions, recipes, roadmapOverrides, roadmaps, roadmapSupplements, roadmapWeekTargets } from "@/db/schema"
 import type { Answers } from "@/lib/counselling/questions"
 import { ENGINE_VERSION, roadmapFor } from "@/lib/counselling/roadmap"
@@ -349,6 +350,34 @@ export async function saveFixedMenu(input: FixedMenuInput): Promise<{ error: str
     .insert(clientFixedMenus)
     .values({ clientId, enabled, items, extraSlots, createdBy: user.id })
     .onConflictDoUpdate({ target: clientFixedMenus.clientId, set: { enabled, items, extraSlots, updatedAt: new Date() } })
+
+  revalidatePath(`/sessions/${sessionId}/review`)
+  return { ok: true }
+}
+
+const proteinRichMealInputSchema = z.object({
+  sessionId: z.string().uuid(),
+  slot: z.enum(MAIN_MEAL_SLOTS).nullable(),
+})
+
+/**
+ * Which main meal is protein-rich (or none). Stored on the client's meal
+ * routine row, so it carries over to every later week until changed, and
+ * snapshotted onto each plan at generation. Saving does not touch an existing
+ * plan: generate again for it to take effect. Errors are returned, not
+ * thrown, for the same reason as saveFixedMenu.
+ */
+export async function saveProteinRichMeal(input: z.input<typeof proteinRichMealInputSchema>): Promise<{ error: string } | { ok: true }> {
+  const user = await requireStaffUser()
+  const parsed = proteinRichMealInputSchema.safeParse(input)
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid meal." }
+  const { sessionId, slot } = parsed.data
+  const { clientId } = await fixedMenuClientFor(sessionId)
+
+  await db
+    .insert(clientFixedMenus)
+    .values({ clientId, proteinRichSlot: slot, createdBy: user.id })
+    .onConflictDoUpdate({ target: clientFixedMenus.clientId, set: { proteinRichSlot: slot, updatedAt: new Date() } })
 
   revalidatePath(`/sessions/${sessionId}/review`)
   return { ok: true }

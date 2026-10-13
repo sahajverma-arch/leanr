@@ -34,6 +34,8 @@ import { FlagsPanel } from "@/components/review/flags-panel"
 import { ActionsBar } from "@/components/review/actions-bar"
 import { OverrideDialog } from "@/components/review/override-dialog"
 import { SupplementCard } from "@/components/review/supplement-card"
+import { ProteinRichMealCard } from "@/components/review/protein-rich-meal-card"
+import { isMainMealSlot } from "@/lib/plan/recipe-meal-balance"
 import { WeekTargetEditor } from "@/components/review/week-target-editor"
 import type { Answers } from "@/lib/counselling/questions"
 import type { RoadmapInput, RoadmapResult } from "@/lib/counselling/roadmap"
@@ -168,6 +170,7 @@ export default async function ReviewPage({
     ...i,
     name: fixedMenuRecipesById.get(i.recipeId)?.name ?? "(dish no longer exists)",
   }))
+  const proteinRichSlot = fixedMenuRow?.proteinRichSlot && isMainMealSlot(fixedMenuRow.proteinRichSlot) ? fixedMenuRow.proteinRichSlot : null
   const fixedMenuPreview = buildFixedMenuPreview()
 
   function buildFixedMenuPreview(): FixedMenuPreview | null {
@@ -188,6 +191,7 @@ export default async function ReviewPage({
       carbsG: week1.food.carbsG,
       fatG: week1.food.fatG,
       fiberG: week1.food.fibreG,
+      ...(proteinRichSlot ? { proteinRichSlot } : {}),
     }
     const slots = FIXED_MENU_SLOTS.map((s, n) => ({ slot: s.slot, slotOrder: n + 1, timeHint: null }))
     const usable = fixedMenuItems.filter((i) => fixedMenuRecipesById.has(i.recipeId))
@@ -475,6 +479,14 @@ export default async function ReviewPage({
             )}
           </CardContent>
         </Card>
+      </section>
+
+      {/* Protein-rich meal — one of breakfast/lunch/dinner carries the most
+          protein; the three are equal in calories either way. See
+          recipe-meal-balance.ts. */}
+      <section>
+        <h2 className="mb-3 font-serif text-lg font-semibold">Protein-rich meal</h2>
+        <ProteinRichMealCard sessionId={sessionId} current={proteinRichSlot} />
       </section>
 
       {/* Meal routine — "same food on all days". Placed after the

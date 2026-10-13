@@ -22,6 +22,12 @@ export interface DailyRecipeTarget {
   carbsG: number
   fatG: number
   fiberG: number
+  /**
+   * The main meal the dietitian asked to be protein-rich (review page), for
+   * THIS day — after any lunch/dinner swap. Steered by recipe-balancer.ts and
+   * reported by recipe-meal-balance.ts; never a macro gate. Absent = none.
+   */
+  proteinRichSlot?: string
 }
 
 export interface MealSlotInfo {

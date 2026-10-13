@@ -188,6 +188,9 @@ export const clientFixedMenus = pgTable("client_fixed_menus", {
   // Optional meals (wake_up, bedtime) written as empty slots on every day for
   // the dietitian to fill. Validated by src/lib/plan/extra-meal-slots.ts.
   extraSlots: text("extra_slots").array().notNull().default([]),
+  // The main meal the dietitian wants protein-rich ("breakfast" | "lunch" |
+  // "dinner"), or null. See src/lib/plan/recipe-meal-balance.ts.
+  proteinRichSlot: text("protein_rich_slot"),
   createdBy: uuid("created_by").references(() => profiles.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -428,6 +431,10 @@ export const dietPlans = pgTable("diet_plans", {
   // `supplement`: a later edit on the review page must not re-aim an
   // existing plan's edits. Null = the roadmap's computed target was used.
   targetOverride: jsonb("target_override"),
+  // The protein-rich meal in force when this plan was generated, snapshotted
+  // for the same reason: a later change on the review page must not re-aim
+  // an existing plan's edits. Null = none.
+  proteinRichSlot: text("protein_rich_slot"),
   // Every reason this plan is not a clean pass, as a string[]: per-day macro
   // misses, plausibility problems, variety breaches, serving-limit hits.
   // Nullable so every historical row backfills as "nothing recorded" rather
@@ -468,6 +475,9 @@ export const dietPlanDays = pgTable("diet_plan_days", {
   dayIndex: integer("day_index").notNull(),
   date: text("date").notNull(),
   achieved: jsonb("achieved").notNull(),
+  // The dietitian swapped this day's lunch and dinner on the plan page. Edits
+  // then re-balance with the protein-rich meal where its food now is.
+  lunchDinnerSwapped: boolean("lunch_dinner_swapped").notNull().default(false),
 })
 
 export type DietPlanDay = typeof dietPlanDays.$inferSelect

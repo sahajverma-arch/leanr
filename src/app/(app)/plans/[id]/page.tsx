@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ComposedMealCell } from "@/components/plan/composed-meal-cell"
 import { MealNote } from "@/components/plan/meal-note"
+import { SwapLunchDinnerButton } from "@/components/plan/swap-lunch-dinner-button"
 import { MacroDonut } from "@/components/plan/macro-donut"
 import { PlanActionsBar } from "@/components/plan/plan-actions-bar"
 import { formatBmi, formatGrams, formatKcal, formatWeight } from "@/lib/format"
@@ -62,7 +63,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
           rejects such a week outright, and approval is refused while any
           remains. Red, above everything, and kept in print. */}
       {dietViolations.length > 0 && (
-        <div className="rounded-xl border-2 border-red-600 bg-red-50 p-4 text-red-950">
+        <div className="rounded-xl border-2 border-red-600 bg-red-50 p-4 text-red-950 dark:bg-red-950 dark:text-red-100">
           <h2 className="text-sm font-semibold uppercase tracking-wide">
             Contains food this client must not have — do not send this plan
           </h2>
@@ -85,7 +86,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
           fasting grain rule, "Other", Halal) or that are incomplete — the
           dietitian has to check these by hand. */}
       {dayRuleNotes.length > 0 && (
-        <div className="rounded-xl border-2 border-amber-500 bg-amber-50 p-4 text-amber-950 print:hidden">
+        <div className="rounded-xl border-2 border-amber-500 bg-amber-50 p-4 text-amber-950 print:hidden dark:bg-amber-950 dark:text-amber-100">
           <h2 className="text-sm font-semibold uppercase tracking-wide">Food rules from counselling to check by hand</h2>
           <ul className="mt-2 space-y-1 text-sm">
             {dayRuleNotes.map((n) => (
@@ -98,7 +99,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
       )}
 
       {warnings.length > 0 && (
-        <div className="rounded-xl border-2 border-amber-500 bg-amber-50 p-4 text-amber-950">
+        <div className="rounded-xl border-2 border-amber-500 bg-amber-50 p-4 text-amber-950 dark:bg-amber-950 dark:text-amber-100">
           <h2 className="text-sm font-semibold uppercase tracking-wide">Needs your review before approving</h2>
           <ul className="mt-2 space-y-1 text-sm">
             {warnings.map((w, i) => (
@@ -125,7 +126,7 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
           of the day the plan does not cook — the client has to be told to
           take it, and the day's protein only adds up if they do. */}
       {supplementLine && (
-        <div className="rounded-xl border-2 border-emerald-600 bg-emerald-50 p-4 text-emerald-950">
+        <div className="rounded-xl border-2 border-emerald-600 bg-emerald-50 p-4 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-100">
           <h2 className="text-sm font-semibold uppercase tracking-wide">Supplement</h2>
           <p className="mt-1 text-sm">{supplementLine}</p>
           <p className="mt-1 text-xs">
@@ -196,7 +197,16 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
       {days.map((day) => (
         <Card key={day.dayIndex} className="overflow-hidden py-0">
           <div className="flex items-center justify-between bg-neutral-950 px-4 py-2 text-sm font-medium text-white">
-            <span>{day.dateLabel}</span>
+            <span className="flex items-center gap-2">
+              {day.dateLabel}
+              {editable &&
+                plan.engine === "recipe" &&
+                day.id &&
+                day.meals.some((m) => m.slot === "lunch") &&
+                day.meals.some((m) => m.slot === "dinner") && (
+                  <SwapLunchDinnerButton planId={plan.id} dayId={day.id} dayLabel={day.dateLabel} />
+                )}
+            </span>
             <span>
               {formatKcal(day.totals.kcal)} kcal | P {formatGrams(day.totals.proteinG)}g | C{" "}
               {formatGrams(day.totals.carbsG)}g | F {formatGrams(day.totals.fatG)}g
@@ -219,7 +229,14 @@ export default async function PlanPage({ params }: { params: Promise<{ id: strin
               {day.meals.map((meal) => (
                 <TableRow key={meal.slot}>
                   <TableCell className="align-top">{meal.timeLabel}</TableCell>
-                  <TableCell className="align-top font-medium">{meal.slotLabel}</TableCell>
+                  <TableCell className="align-top font-medium">
+                    {meal.slotLabel}
+                    {day.proteinRichSlot === meal.slot && (
+                      <span className="mt-0.5 block text-[11px] font-normal text-emerald-700 dark:text-emerald-400">
+                        Protein-rich
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell className="whitespace-normal align-top">
                     <ComposedMealCell
                       items={meal.items}

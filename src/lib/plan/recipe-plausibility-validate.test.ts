@@ -30,13 +30,36 @@ describe("describePlausibilityProblems", () => {
     expect(describePlausibilityProblems(day, constraints)).toEqual([])
   })
 
-  it("flags two sabzis in one lunch — one sabzi, one dal", () => {
+  it("flags dal AND sabzi in one lunch — one dal OR one sabzi, never both", () => {
     const roti = makeRecipe({ name: "Roti", category: "Roti" })
     const dal = makeRecipe({ name: "Arhar Dal", category: "Dal" })
     const paneer = makeRecipe({ name: "Paneer Bhurji", category: "High Protein Sabzi" })
     const bhindi = makeRecipe({ name: "Bhindi Masala", category: "Sabzi" })
     const day = makeDay([{ slot: "lunch", items: [roti, dal, paneer, bhindi].map((recipe) => ({ recipe, grams: 150 })) }])
-    expect(describePlausibilityProblems(day, constraints).some((p) => p.includes("2 sabzi dishes"))).toBe(true)
+    expect(describePlausibilityProblems(day, constraints).some((p) => p.includes("3 dal/curry/sabzi dishes"))).toBe(true)
+  })
+
+  it("flags a dal beside a sabzi even when there is only one of each", () => {
+    const roti = makeRecipe({ name: "Roti", category: "Roti" })
+    const dal = makeRecipe({ name: "Arhar Dal", category: "Dal" })
+    const bhindi = makeRecipe({ name: "Bhindi Masala", category: "Sabzi" })
+    const day = makeDay([{ slot: "dinner", items: [roti, dal, bhindi].map((recipe) => ({ recipe, grams: 150 })) }])
+    expect(describePlausibilityProblems(day, constraints).some((p) => p.includes("serve one dal OR one sabzi"))).toBe(true)
+  })
+
+  it("accepts roti + rice + one sabzi + curd + salad, and khichdi + kadhi", () => {
+    const roti = makeRecipe({ name: "Roti", category: "Roti" })
+    const rice = makeRecipe({ name: "Jeera Rice", category: "Rice" })
+    const bhindi = makeRecipe({ name: "Bhindi Masala", category: "Sabzi" })
+    const curd = makeRecipe({ name: "Curd", category: "Raita", mainOrMid: "mid", mustHaveCategories: ["Pulao", "Khichdi", "Biryani"] })
+    const salad = makeRecipe({ name: "Cucumber Salad", category: "Light Salad", mainOrMid: "mid" })
+    const khichdi = makeRecipe({ name: "Moong Khichdi", category: "Khichdi" })
+    const kadhi = makeRecipe({ name: "Kadhi", category: "Curry" })
+    const day = makeDay([
+      { slot: "lunch", items: [roti, rice, bhindi, curd, salad].map((recipe) => ({ recipe, grams: 150 })) },
+      { slot: "dinner", items: [khichdi, kadhi].map((recipe) => ({ recipe, grams: 200 })) },
+    ])
+    expect(describePlausibilityProblems(day, constraints)).toEqual([])
   })
 
   it("flags a duplicate recipe within one meal", () => {
@@ -102,7 +125,7 @@ describe("describePlausibilityProblems", () => {
   it("flags lunch/dinner missing a dal/curry dish", () => {
     const roti = makeRecipe({ name: "Roti", category: "Roti/Paratha/Bread", mainOrMid: "main" })
     const day = makeDay([{ slot: "dinner", items: [{ recipe: roti, grams: 60 }] }])
-    expect(describePlausibilityProblems(day, constraints).some((p) => p.includes("missing a Dal/Curry dish"))).toBe(true)
+    expect(describePlausibilityProblems(day, constraints).some((p) => p.includes("missing a Dal/Curry or Sabzi"))).toBe(true)
   })
 
   it("does not require a separate staple/dal when the meal is already a composite dish (Biryani, a Thali-style Heavy Meal row)", () => {
@@ -145,12 +168,12 @@ describe("describePlausibilityProblems", () => {
     expect(problems.some((p) => p.includes("missing a staple"))).toBe(true)
   })
 
-  it("does NOT waive the Dal/Curry requirement for a vegetarian-eligible 'high protein' dish (e.g. Tofu Chilli) — the exemption is only for a real egg/meat/fish dish", () => {
+  it("counts a vegetarian 'high protein' sabzi (Tofu Chilli) as the meal's one sabzi — roti + tofu is a complete dinner", () => {
     const tofuChilli = makeRecipe({ name: "Tofu Chilli", category: "High Protein Sabzi", mainOrMid: "main" })
     const roti = makeRecipe({ name: "Roti", category: "Roti", mainOrMid: "main" })
     const day = makeDay([{ slot: "dinner", items: [{ recipe: tofuChilli, grams: 100 }, { recipe: roti, grams: 60 }] }])
     const problems = describePlausibilityProblems(day, constraints)
-    expect(problems.some((p) => p.includes("missing a Dal/Curry"))).toBe(true)
+    expect(problems.some((p) => p.includes("missing a Dal/Curry"))).toBe(false)
   })
 
   it("flags a real non-veg dish paired with a separate Dal — real regression, exact hand-built plan: Dahi Chicken + Wheat Bran Roti + Aloo Tamatar Sabzi With Gravy ('we cant give chicken like things meat with any sabzi and dal')", () => {

@@ -64,7 +64,7 @@ function DeltaRow({ delta }: { delta: MacroImpact }) {
   const nothing =
     Math.round(delta.kcal) === 0 && Math.round(delta.proteinG) === 0 && Math.round(delta.carbsG) === 0 && Math.round(delta.fatG) === 0
   if (nothing) return <span className="text-muted-foreground">No change</span>
-  const tone = delta.kcal > 0 ? "text-amber-700" : "text-sky-700"
+  const tone = delta.kcal > 0 ? "text-amber-700 dark:text-amber-300" : "text-sky-700 dark:text-sky-300"
   return (
     <span className={tone}>
       {signed(delta.kcal)} kcal · P {signed(delta.proteinG)}g · C {signed(delta.carbsG)}g · F {signed(delta.fatG)}g ·
@@ -154,7 +154,7 @@ function RecipeItemEditDialog({
           <p className="font-medium">{describeQuantity(editing, currentGrams).label}</p>
           <MacroRow macros={currentMacros} className="text-xs text-muted-foreground" />
           {editing.gramsLocked && (
-            <p className="mt-2 text-xs text-emerald-700">
+            <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
               This quantity was set by hand, so the day is balanced <em>around</em> it rather than changing it.
             </p>
           )}

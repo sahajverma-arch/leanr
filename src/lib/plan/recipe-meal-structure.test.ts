@@ -16,32 +16,33 @@ describe("formatSlotStructureRules", () => {
 
   it("mentions the staple+dal requirement and the liquid-anchor prohibition", () => {
     const text = formatSlotStructureRules(["lunch"])
-    expect(text).toContain("Roti/Paratha/Bread or Rice/Pulao/Biryani")
-    expect(text).toContain("Dal/Curry dish")
+    expect(text).toContain("Roti/Paratha/Bread and/or Rice/Pulao")
+    expect(text).toContain("exactly ONE Dal/Curry OR ONE Sabzi (never both)")
+    expect(text).toContain("Salad and/or Curd/Raita")
     expect(text).toContain("Never anchor lunch on soup, tea, dessert, or a liquid dish alone")
   })
 
   it("says a composite dish already satisfies staple+dal and warns against adding a separate staple", () => {
     const text = formatSlotStructureRules(["lunch"])
-    expect(text).toContain("Khichdi/Kadhi-with-rice")
-    expect(text).toContain("never add a SEPARATE roti/rice alongside one of these")
+    expect(text).toContain("a Khichdi")
+    expect(text).toContain("never add a SEPARATE roti/rice beside one of these")
   })
 
   it("warns that a plain protein main (zero carbs) still needs a real staple, unlike a composite dish", () => {
     const text = formatSlotStructureRules(["lunch"])
     expect(text).toContain("Roasted Chicken")
-    expect(text).toContain("has NO carbs and still needs a real staple alongside it")
+    expect(text).toContain("has NO carbs and still needs a staple")
   })
 
   it("says a real egg/chicken/fish dish substitutes for the Dal/Curry requirement", () => {
     const text = formatSlotStructureRules(["lunch"])
-    expect(text).toContain("does NOT also need a separate Dal/Curry")
+    expect(text).toContain("is the meal's protein course by itself")
   })
 
   it("says a real non-veg dish must never be paired with a cooked Sabzi or Dal/Curry, and suggests a Salad or sizing up quantity instead", () => {
     const text = formatSlotStructureRules(["lunch"])
-    expect(text).toContain("must NEVER also be paired with a cooked Sabzi or Dal/Curry")
-    expect(text).toContain("use a Salad instead, or just size up the protein/staple quantity")
+    expect(text).toContain("NEVER with a cooked Sabzi or Dal/Curry")
+    expect(text).toContain("pair it with a staple and a salad/curd")
   })
 })
 

@@ -3,6 +3,7 @@ import localFont from "next/font/local";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
+import { ThemeProvider } from "@/components/theme-provider";
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -26,10 +27,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={cn("font-sans", geistSans.variable)}>
+    // suppressHydrationWarning: next-themes sets the `dark` class and
+    // `color-scheme` on <html> before React hydrates, so the attribute set
+    // differs from the server render on purpose.
+    <html lang="en" className={cn("font-sans", geistSans.variable)} suppressHydrationWarning>
       <body className={`${geistMono.variable} antialiased`}>
-        {children}
-        <Toaster />
+        <ThemeProvider>
+          {children}
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   );

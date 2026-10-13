@@ -90,7 +90,7 @@ export function IngredientPanel({ itemId, editable }: { itemId: string; editable
       </p>
 
       {state.gramsLocked && (
-        <p className="text-xs text-amber-700">
+        <p className="text-xs text-amber-700 dark:text-amber-300">
           This dish&apos;s weight is pinned at {formatGrams(state.portionGrams)} g, so it stays put —
           an edit here changes what is in those grams, not how much is served.
         </p>
@@ -109,7 +109,7 @@ export function IngredientPanel({ itemId, editable }: { itemId: string; editable
                 <p className="truncate text-sm font-medium capitalize">
                   {row.name}
                   {row.edited && (
-                    <span className="ml-1.5 rounded bg-amber-100 px-1 text-[10px] font-normal text-amber-800">
+                    <span className="ml-1.5 rounded bg-amber-100 px-1 text-[10px] font-normal text-amber-800 dark:bg-amber-950 dark:text-amber-200">
                       changed
                     </span>
                   )}

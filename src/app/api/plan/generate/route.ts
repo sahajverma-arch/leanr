@@ -89,6 +89,7 @@ import { selectRecipes, RecipeSelectionRejectedError, type RecipeAttemptLog } fr
 import { applyEngineDefault, ExchangeEngineDisabledError } from "@/lib/plan/generate-request-engine"
 import { filterRecipePool } from "@/lib/foods/recipe-pool-filters"
 import { RECIPE_PIPELINE_COLUMNS } from "@/lib/plan/recipe-types"
+import { isMainMealSlot } from "@/lib/plan/recipe-meal-balance"
 import type { ClientRecipeConstraints } from "@/lib/plan/recipe-plausibility-validate"
 import type { DailyRecipeTarget, MealSlotInfo, RecipeForPrompt, RecipeSelectionResult, RecipeSelectorInput } from "@/lib/plan/recipe-types"
 import {
@@ -789,6 +790,7 @@ async function persistRecipeWeek(
         // click that generated it.
         supplement: ctx.supplement,
         targetOverride: ctx.targetOverride,
+        proteinRichSlot: ctx.dailyTarget.proteinRichSlot ?? null,
         warnings: selectionResult.warnings,
         preparedBy: ctx.user.id,
         status: "draft",
@@ -1095,6 +1097,10 @@ export async function POST(request: Request) {
       carbsG: dailyTarget.carbsG,
       fatG: dailyTarget.fatG,
       fiberG: dailyTarget.fibreG,
+      // The review page's protein-rich meal, if any (recipe-meal-balance.ts).
+      // Carried on the target so the prompt, the balancer and the repair all
+      // see the same choice; snapshotted onto the plan below.
+      ...(fixedMenuRow?.proteinRichSlot && isMainMealSlot(fixedMenuRow.proteinRichSlot) ? { proteinRichSlot: fixedMenuRow.proteinRichSlot } : {}),
     }
 
     // Dietitian Knowledge RAG layer (see CLAUDE.md "Dietitian knowledge
