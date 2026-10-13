@@ -25,7 +25,7 @@ describe("formatRecipeQuantity — container scale (tier 3)", () => {
 
   it("routes a vessel/stray source noun through the container scale, NOT through that noun — this is the whole point of the change", () => {
     // Previously these rendered "1 katori" / "2 glasses" / "2 rices".
-    expect(formatRecipeQuantity({ name: "Kokum Sherbet", category: "Water Beverage", unitLabel: "glass", perUnitGrams: 200 }, 400)).toBe("large bowl, 400 g")
+    expect(formatRecipeQuantity({ name: "Kokum Sherbet", category: "Water Beverage", unitLabel: "glass", perUnitGrams: 200 }, 400)).toBe("2 glasses, 400 ml") // a drink: glass, not bowl
     expect(formatRecipeQuantity({ name: "Kuttu Kadhi With Samak Chawal (Navratri Special)", category: "Curry + Rice", unitLabel: "rice", perUnitGrams: 330 }, 470)).toBe("plate, 470 g")
     expect(formatRecipeQuantity({ name: "Cauliflower Curry", category: "Sabzi", unitLabel: "cup", perUnitGrams: 100 }, 190)).toBe("small bowl, 190 g")
   })
@@ -77,5 +77,40 @@ describe("portionSizeReferenceText", () => {
     for (const label of ["spoonful", "small serving", "small bowl", "bowl", "large bowl", "plate"]) {
       expect(text).toContain(label)
     }
+  })
+})
+
+describe("formatRecipeQuantity — dry snacks", () => {
+  it("says small handful, not spoonful, for chips and nuts under 40 g", () => {
+    expect(formatRecipeQuantity({ name: "Banana Chips", category: "Snack", unitLabel: null, perUnitGrams: null }, 40)).toBe("small handful, 40 g")
+    expect(formatRecipeQuantity({ name: "Roasted Chickpeas", category: "Nuts", unitLabel: null, perUnitGrams: null }, 25)).toBe("small handful, 25 g")
+  })
+
+  it("keeps spoonful for a chutney, and the normal scale for a bigger snack", () => {
+    expect(formatRecipeQuantity({ name: "Mint Chutney", category: "Chutney", unitLabel: null, perUnitGrams: null }, 25)).toBe("spoonful, 25 g")
+    expect(formatRecipeQuantity({ name: "Banana Chips", category: "Snack", unitLabel: null, perUnitGrams: null }, 53)).toBe("small serving, 53 g")
+  })
+})
+
+describe("formatRecipeQuantity — drinks", () => {
+  const drink = (category: string) => ({ name: "Lemon Water", category, unitLabel: "glass", perUnitGrams: 250 })
+
+  it("serves a drink in a glass, in ml, never a bowl", () => {
+    expect(formatRecipeQuantity(drink("Morning Water"), 250)).toBe("glass, 250 ml")
+    expect(formatRecipeQuantity(drink("Lassi"), 200)).toBe("glass, 200 ml")
+    expect(formatRecipeQuantity(drink("Smoothie"), 333)).toBe("glass, 333 ml")
+  })
+
+  it("serves tea and coffee in a cup", () => {
+    expect(formatRecipeQuantity(drink("Tea"), 150)).toBe("cup, 150 ml")
+  })
+
+  it("counts glasses for a big pour and calls a tiny one a shot", () => {
+    expect(formatRecipeQuantity(drink("Juice"), 500)).toBe("2 glasses, 500 ml")
+    expect(formatRecipeQuantity(drink("Morning Water"), 30)).toBe("shot, 30 ml")
+  })
+
+  it("keeps soup in a bowl", () => {
+    expect(formatRecipeQuantity({ name: "Pumpkin Soup", category: "Light Soup", unitLabel: "bowl", perUnitGrams: 200 }, 200)).toBe("small bowl, 200 g")
   })
 })

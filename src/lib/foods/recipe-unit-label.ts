@@ -61,18 +61,22 @@ export function deriveRecipeUnit(row: RawRecipeRow): RecipeUnit | null {
   const wtValue = wtMatch ? parseFloat(wtMatch[1]) : null
   if (wtValue === null || wtValue <= 0) return null
 
-  const count = extractLeadingCount(qty)
+  const pieces = isDiscretePieceUnit(measuredIn)
+  // A piece-counted row needs no noun (it is shown as "pieces" anyway), and
+  // a serving text that is only the noun ("roti") means one. Singhare Ki
+  // Roti ("roti", 85 g), Mooli Paratha and Sattu Chilla ("1") had no piece
+  // weight at all before this, so a plan could not say how many to make.
+  const count = extractLeadingCount(qty) ?? (pieces ? 1 : null)
   if (count === null || count <= 0) return null
 
   const remainderAfterCount = qty.replace(/^\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*/, "")
   const remainderNoun = lastWord(remainderAfterCount)
 
-  const noun = remainderNoun ?? (measuredIn && measuredIn.toLowerCase() !== "numbers" ? lastWord(measuredIn) : null)
-  if (!noun) return null
+  const noun = remainderNoun ?? (measuredIn && !pieces ? lastWord(measuredIn) : null)
+  if (!noun && !pieces) return null
 
   const perUnitGrams = wtValue / count
   if (!Number.isFinite(perUnitGrams) || perUnitGrams <= 0) return null
 
-  const unitLabel = isDiscretePieceUnit(measuredIn) ? "piece" : noun
-  return { unitLabel, perUnitGrams }
+  return { unitLabel: pieces ? "piece" : (noun as string), perUnitGrams }
 }

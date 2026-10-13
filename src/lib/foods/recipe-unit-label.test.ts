@@ -65,8 +65,16 @@ describe("deriveRecipeUnit", () => {
     expect(deriveRecipeUnit(makeRow({ quantityPerServingRaw: "100 gm cooked Chicken", isMeasuredInRaw: "Grams", wtOfMeasuredAmtRaw: "100gm" }))).toBeNull()
   })
 
-  it("returns null when there's no noun anywhere (bare count, Numbers-measured, no vessel fallback)", () => {
-    expect(deriveRecipeUnit(makeRow({ quantityPerServingRaw: "2", isMeasuredInRaw: "Numbers", wtOfMeasuredAmtRaw: "30gm" }))).toBeNull()
+  it("counts pieces for a Numbers-measured bare count with no noun (Mooli Paratha: '1', 65gm)", () => {
+    expect(deriveRecipeUnit(makeRow({ quantityPerServingRaw: "2", isMeasuredInRaw: "Numbers", wtOfMeasuredAmtRaw: "30gm" }))).toEqual({ unitLabel: "piece", perUnitGrams: 15 })
+  })
+
+  it("reads a Numbers-measured serving that is only the noun as one piece (Singhare Ki Roti: 'roti', 85gm)", () => {
+    expect(deriveRecipeUnit(makeRow({ quantityPerServingRaw: "roti", isMeasuredInRaw: "Numbers", wtOfMeasuredAmtRaw: "85gm" }))).toEqual({ unitLabel: "piece", perUnitGrams: 85 })
+  })
+
+  it("still returns null for a bare count measured in a non-vessel, non-piece unit", () => {
+    expect(deriveRecipeUnit(makeRow({ quantityPerServingRaw: "2", isMeasuredInRaw: "", wtOfMeasuredAmtRaw: "30gm" }))).toBeNull()
   })
 
   it("returns null for an unparseable quantity ('-')", () => {

@@ -84,8 +84,45 @@ function pluralize(word: string, count: number): string {
   return `${word}s`
 }
 
-function containerLabel(grams: number): string {
-  return CONTAINER_BUCKETS.find((b) => grams <= b.maxG)!.label
+// Chips, namkeen, roasted chana and nuts are eaten by the handful, never the
+// spoon: a dietitian rejected "Banana Chips — spoonful, 40 g". Only the
+// smallest bucket changes; chutneys, dips, spreads and seeds stay spoonfuls.
+const HANDFUL_CATEGORIES = new Set(["snack", "nuts"])
+
+// Drinks are served in a glass or a cup, not a bowl: a dietitian rejected
+// "Lemon Water (bowl, 250 g)". Matched on the Category column, not on
+// Consistency, which marks Kokum Sherbet, Aam Panna and the slushes "solid".
+// Soups, rasam, oats-in-milk and porridge are NOT here: those are eaten from
+// a bowl. Shown in ml (the source weighs drinks in ml, 1 ml = 1 g).
+const CUP_DRINK_CATEGORIES = new Set(["tea", "coffee"])
+const GLASS_DRINK_CATEGORIES = new Set([
+  "morning water",
+  "bedtime water",
+  "water beverage",
+  "beverage",
+  "juice",
+  "lassi",
+  "shake",
+  "smoothie",
+  "flavoured milk",
+  "spiced milk",
+])
+
+/** "glass, 250 ml" / "cup, 150 ml" for a drink, or null when the dish is not one. */
+function drinkLabel(grams: number, category: string): string | null {
+  const c = category.trim().toLowerCase()
+  const vessel = CUP_DRINK_CATEGORIES.has(c) ? "cup" : GLASS_DRINK_CATEGORIES.has(c) ? "glass" : null
+  if (vessel === null) return null
+  const ml = `${Math.round(grams)} ml`
+  if (grams < 60) return `shot, ${ml}`
+  if (grams <= 350) return `${vessel}, ${ml}`
+  const count = Math.round(grams / 250)
+  return `${count} ${vessel === "glass" ? "glasses" : "cups"}, ${ml}`
+}
+
+function containerLabel(grams: number, category: string): string {
+  const label = CONTAINER_BUCKETS.find((b) => grams <= b.maxG)!.label
+  return label === "spoonful" && HANDFUL_CATEGORIES.has(category.trim().toLowerCase()) ? "small handful" : label
 }
 
 function gramsLabel(grams: number): string {
@@ -103,6 +140,9 @@ function pieceCount(grams: number, perUnitGrams: number): number {
  * covers any gram figure on its own.
  */
 export function formatRecipeQuantity(recipe: RecipeQuantityInput, grams: number): string {
+  const drink = drinkLabel(grams, recipe.category)
+  if (drink !== null) return drink
+
   const perUnit = recipe.perUnitGrams
   const hasPerUnit = perUnit !== null && perUnit > 0
 
@@ -133,10 +173,10 @@ export function formatRecipeQuantity(recipe: RecipeQuantityInput, grams: number)
   }
 
   // Tier 3 — container size.
-  return `${containerLabel(grams)}, ${gramsLabel(grams)}`
+  return `${containerLabel(grams, recipe.category)}, ${gramsLabel(grams)}`
 }
 
 /** The scale itself, for rendering the reference legend alongside a plan. */
 export function portionSizeReferenceText(): string {
-  return "Portion-size reference: spoonful <40 g · small serving 40-100 g · small bowl 100-200 g · bowl 200-300 g · large bowl 300-450 g · plate 450 g+."
+  return "Portion-size reference: spoonful <40 g (chips, nuts and dry snacks: small handful) · small serving 40-100 g · small bowl 100-200 g · bowl 200-300 g · large bowl 300-450 g · plate 450 g+. Drinks: glass (tea and coffee: cup), in ml."
 }

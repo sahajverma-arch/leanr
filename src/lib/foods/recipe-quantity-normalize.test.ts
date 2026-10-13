@@ -59,6 +59,14 @@ describe("computeServingLimits", () => {
     expect(limits.flags.some((f) => f.includes("Quantity per serving"))).toBe(true)
   })
 
+  it("reads a piece-counted range as the LOW count, matching the piece weight (Gluten-Free Missi Roti: '1-2 roti' = 55gm)", () => {
+    const row = makeRow({ quantityPerServingRaw: "1-2 roti", isMeasuredInRaw: "Numbers", minQuantityRaw: "1", maximumQuantityRaw: "2", wtOfMeasuredAmtRaw: "55gm" })
+    const limits = computeServingLimits(row)
+    expect(limits.minGrams).toBe(55)
+    expect(limits.maxGrams).toBe(110)
+    expect(limits.idealGrams).toBe(55)
+  })
+
   it("treats a Min/Max Quantity cell with a stray unit suffix as already-grams (the real Bel Fruit case)", () => {
     const row = makeRow({ minQuantityRaw: "100", maximumQuantityRaw: "150gm" })
     const limits = computeServingLimits(row)

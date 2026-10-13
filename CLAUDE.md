@@ -1565,6 +1565,23 @@ the count level and is accepted. **Replay over 42 saved plans:** meals with no r
 meals with 2+ dal/sabzi 268 -> 0 (both counted under the new rules); days within ±8% 260 -> 263;
 weeks passing 37 -> 37; meals within 15% of the equal-kcal share 194 -> 189.
 
+### Piece counts, handfuls and glasses (2026-10-13)
+
+Four dietitian corrections to how a quantity reads, plus the data behind them:
+- **Rotis with no count.** A "Numbers" row whose serving text was only the noun ("roti") or only a
+  number ("1") got no piece weight (Singhare Ki Roti, Mooli Paratha, Sattu Chilla — 18 rows). Both
+  now read as pieces (`recipe-unit-label.ts`, `recipe-quantity-normalize.ts`).
+- **"1-2 roti" = 55 g.** The piece weight used the low count, the serving range the midpoint, so
+  Missi Roti allowed 2/3 of a roti. A piece-counted range now means the LOW count everywhere
+  (51 rows). The sheet's weight is one piece.
+- **Almond Flour Roti / Oats Roti** were "2 small roti" = 45 g (22.5 g each). Changed in
+  `recipe_database.csv` to 1 roti, on the dietitian's call.
+- **Display** (`recipe-quantity-display.ts`): chips/nuts under 40 g are a "small handful", not a
+  spoonful; drinks (by Category, since Consistency marks sherbets "solid") are a glass, tea and
+  coffee a cup, in ml. Soups and porridge stay in a bowl.
+The DB rows were updated in place with the same functions `seed-recipes.ts` uses. **Still open:**
+Banana Chips' macros are wrong in the sheet (~12 kcal/100 g); a dietitian must correct the row.
+
 ### Weekday food rules are enforced (2026-10-01)
 
 **A non-vegetarian client marked "no non-veg or eggs on Monday" got Chicken Kathi Roll, Prawns Salad and

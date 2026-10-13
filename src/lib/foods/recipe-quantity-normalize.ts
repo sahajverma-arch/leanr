@@ -135,10 +135,25 @@ export function computeServingLimits(row: RawRecipeRow): ServingLimits {
 
   const minQty = Number(minRaw)
   const maxQty = Number(maxRaw)
-  const qtyPerServing = extractLeadingNumber(row.quantityPerServingRaw)
+  // A piece-counted row whose serving text is only the noun ("roti") is one
+  // piece — Singhare Ki Roti fell to the generic bread default without this.
+  const parsedQty = extractLeadingNumber(row.quantityPerServingRaw)
+  const countedInPieces = row.isMeasuredInRaw.trim().toLowerCase() === "numbers"
+  // A piece-counted range ("1-2 roti" = 55 g) means the weight is the LOW
+  // count, the same reading recipe-unit-label.ts uses for the piece weight.
+  // Taking the midpoint here made the two disagree: Gluten-Free Missi Roti was
+  // 55 g a roti with a 37 g minimum (2/3 of a roti), Thepla 53 g a piece with
+  // a 71 g minimum.
+  const lowCount = countedInPieces && parsedQty.wasRange ? Number(row.quantityPerServingRaw.trim().match(/^(\d+(?:\.\d+)?)/)?.[1]) : null
+  const qtyPerServing =
+    parsedQty.value == null && countedInPieces && /[a-z]/i.test(row.quantityPerServingRaw)
+      ? { value: 1, wasRange: false }
+      : lowCount !== null && lowCount > 0
+        ? { value: lowCount, wasRange: true }
+        : parsedQty
   const wtOfMeasuredAmt = extractGrams(row.wtOfMeasuredAmtRaw)
 
-  if (qtyPerServing.wasRange) flags.push(`Quantity per serving "${row.quantityPerServingRaw}" was a range — used midpoint`)
+  if (qtyPerServing.wasRange) flags.push(`Quantity per serving "${row.quantityPerServingRaw}" was a range — used ${lowCount !== null ? "the low count" : "midpoint"}`)
   if (wtOfMeasuredAmt.wasRange) flags.push(`Wt.of Measured Amt. "${row.wtOfMeasuredAmtRaw}" was a range — used midpoint`)
 
   if (
