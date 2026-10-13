@@ -39,7 +39,7 @@ import { recipeDayRuleViolation } from "./day-food-rules"
 import { balanceDayToTargets } from "./recipe-balancer"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
 import { isMainMealSlot, MEAL_KCAL_BALANCE_TOLERANCE, mealShapeScore } from "./recipe-meal-balance"
-import { isCurryCourse, isSelfContainedMeal, MAX_CURRY_PER_MEAL, SIDE_BUCKET, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
+import { isCurryCourse, isMealStaple, isSelfContainedMeal, MAX_CURRY_PER_MEAL, SIDE_BUCKET, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import type { DailyRecipeTarget, GroundedRecipeDay, GroundedRecipeItem, RecipeAchievedMacros, RecipeForPipeline } from "./recipe-types"
 import { RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
@@ -719,6 +719,84 @@ export function enforceSingleCurry(
   return { day: current, swaps }
 }
 
+/** RepairSwap.from for a roti or rice added to a lunch/dinner that had none. */
+export const ADDED_MISSING_STAPLE = "(added: lunch/dinner needs roti or rice)"
+
+/** True when a lunch/dinner has no roti/rice and no real khichdi or composite one-dish meal standing in for it. */
+function lacksStaple(meal: GroundedRecipeDay["meals"][number]): boolean {
+  if (!STRUCTURED_MEAL_SLOTS.has(meal.slot) || meal.items.length === 0) return false
+  return !meal.items.some((item) => {
+    const bucket = recipeCategoryBucket(item.recipe.category, item.recipe.name)
+    return isMealStaple(item.recipe.category, bucket) || isSelfContainedMeal(item.recipe.category, bucket, item.recipe.carbsPer100G)
+  })
+}
+
+/**
+ * Every lunch and dinner has a roti or rice (dietitian rule, 2026-10-13). A
+ * saved plan went out with lunches of a 10 g Colocasia Leaves Roll and dal,
+ * and a dinner of two sabzis, because a wrap counted as the staple and a
+ * brinjal sabzi filed under "Khichdi" counted as a complete meal. The
+ * validator now flags both, but on the best-of-N path a flag is only a
+ * warning, so this pass fixes the plate.
+ *
+ * Options, best macro fit after re-balancing wins, fewest plausibility
+ * problems first: turn a wrap/roll/sandwich/chilla in the meal INTO a plain
+ * roti or rice dish, or ADD one. Mandatory, not macro-gated, like
+ * enforceSingleCurry(): plate shape is not traded for a macro point.
+ */
+export function enforceStaple(
+  day: GroundedRecipeDay,
+  target: DailyRecipeTarget,
+  pool: RepairPool,
+  constraints: ClientRecipeConstraints,
+  weeklyCounts: Map<string, number>
+): { day: GroundedRecipeDay; swaps: RepairSwap[] } {
+  const swaps: RepairSwap[] = []
+  if (day.meals.some((meal) => meal.items.some((item) => item.gramsLocked))) return { day, swaps }
+  const allowedToday = allowedOnDay(constraints, day.dayIndex)
+  const staples = [...(pool.byFamily.get(ROTI_FAMILY) ?? []), ...(pool.byFamily.get(RICE_FAMILY) ?? [])].filter(
+    (r) => !isAnimalProteinRecipe(r) && allowedToday(r) && isMealStaple(r.category, recipeCategoryBucket(r.category, r.name))
+  )
+
+  let current = day
+  for (let mealIndex = 0; mealIndex < current.meals.length; mealIndex++) {
+    const meal = current.meals[mealIndex]
+    if (!lacksStaple(meal)) continue
+    const namesInMeal = new Set(meal.items.map((item) => item.recipe.name))
+    const candidates = staples.filter((r) => !namesInMeal.has(r.name))
+    const underCap = candidates.filter((r) => (weeklyCounts.get(r.name) ?? 0) < repeatCapFor(r))
+    // A roti or rice is a staple, capped at 4 a week; if every one is used up,
+    // a fifth roti still beats a lunch with none.
+    const choices = underCap.length > 0 ? underCap : candidates
+
+    const options: { next: GroundedRecipeDay; swap: RepairSwap }[] = []
+    meal.items.forEach((item, itemIndex) => {
+      if (recipeCategoryBucket(item.recipe.category, item.recipe.name) !== "bread") return
+      for (const recipe of choices) {
+        options.push({ next: replaceItem(current, mealIndex, itemIndex, recipe), swap: { dayIndex: current.dayIndex, slot: meal.slot, from: item.recipe.name, to: recipe.name } })
+      }
+    })
+    for (const recipe of choices) {
+      options.push({ next: addItem(current, mealIndex, recipe), swap: { dayIndex: current.dayIndex, slot: meal.slot, from: ADDED_MISSING_STAPLE, to: recipe.name } })
+    }
+
+    let best: { day: GroundedRecipeDay; problems: number; score: number; swap: RepairSwap } | null = null
+    for (const option of options) {
+      const rebalanced = balanceDayToTargets(option.next, target)
+      const problems = describePlausibilityProblems(rebalanced, constraints).length
+      const score = worstRelativeDeviation(rebalanced.totals, target)
+      if (best === null || problems < best.problems || (problems === best.problems && score < best.score)) best = { day: rebalanced, problems, score, swap: option.swap }
+    }
+    if (best === null) continue
+
+    if (best.swap.from !== ADDED_MISSING_STAPLE) weeklyCounts.set(best.swap.from, Math.max(0, (weeklyCounts.get(best.swap.from) ?? 1) - 1))
+    weeklyCounts.set(best.swap.to, (weeklyCounts.get(best.swap.to) ?? 0) + 1)
+    swaps.push(best.swap)
+    current = best.day
+  }
+  return { day: current, swaps }
+}
+
 /** RepairSwap.to for a dish taken off a restricted day because nothing allowed could replace it. */
 export const REMOVED_FOR_DAY_RULE = "(removed: weekday food rule)"
 
@@ -865,7 +943,9 @@ export function repairWeek(
     // is handed.
     const single = enforceSingleCurry(day, target, pool, constraints, weeklyCounts)
     swaps.push(...single.swaps)
-    const result = repairDay(single.day, target, pool, constraints, weeklyCounts)
+    const staple = enforceStaple(single.day, target, pool, constraints, weeklyCounts)
+    swaps.push(...staple.swaps)
+    const result = repairDay(staple.day, target, pool, constraints, weeklyCounts)
     swaps.push(...result.swaps)
     return result.day
   })
@@ -878,7 +958,14 @@ export function repairWeek(
   const finalDays = varied.days.map((d) => {
     const ruled = enforceDayRules(d, target, pool, constraints, finalCounts)
     finalSwaps.push(...ruled.swaps)
-    return ruled.day
+    // And to the plate shape: a later pass trading one plausibility problem
+    // for another (count level, so accepted) must not leave a meal with two
+    // curries or no roti/rice.
+    const single = enforceSingleCurry(ruled.day, target, pool, constraints, finalCounts)
+    finalSwaps.push(...single.swaps)
+    const staple = enforceStaple(single.day, target, pool, constraints, finalCounts)
+    finalSwaps.push(...staple.swaps)
+    return staple.day
   })
   return { days: finalDays, swaps: [...swaps, ...varied.swaps, ...finalSwaps] }
 }

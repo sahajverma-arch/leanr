@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import { formatSlotStructureRules, isSelfContainedMeal, MEAT_CONFLICTING_BUCKETS } from "./recipe-meal-structure"
+import { recipeCategoryBucket } from "./recipe-category"
+import { formatSlotStructureRules, isMealStaple, isSelfContainedMeal, MEAT_CONFLICTING_BUCKETS } from "./recipe-meal-structure"
 
 describe("formatSlotStructureRules", () => {
   it("returns empty string when no slot needs structure rules", () => {
@@ -16,7 +17,8 @@ describe("formatSlotStructureRules", () => {
 
   it("mentions the staple+dal requirement and the liquid-anchor prohibition", () => {
     const text = formatSlotStructureRules(["lunch"])
-    expect(text).toContain("Roti/Paratha/Bread and/or Rice/Pulao")
+    expect(text).toContain("Roti/Paratha/Thepla and/or Rice/Pulao")
+    expect(text).toContain("a wrap, roll, sandwich or chilla is NOT a staple")
     expect(text).toContain("exactly ONE Dal/Curry OR ONE Sabzi (never both)")
     expect(text).toContain("Salad and/or Curd/Raita")
     expect(text).toContain("Never anchor lunch on soup, tea, dessert, or a liquid dish alone")
@@ -24,7 +26,7 @@ describe("formatSlotStructureRules", () => {
 
   it("says a composite dish already satisfies staple+dal and warns against adding a separate staple", () => {
     const text = formatSlotStructureRules(["lunch"])
-    expect(text).toContain("a Khichdi")
+    expect(text).toContain("a real Khichdi — not a porridge")
     expect(text).toContain("never add a SEPARATE roti/rice beside one of these")
   })
 
@@ -70,8 +72,19 @@ describe("isSelfContainedMeal", () => {
     expect(isSelfContainedMeal("Heavy Meal", "heavy_meal", 7.8)).toBe(false)
   })
 
-  it("is true for a Khichdi-category dish even though its bucket is dal_curry, not heavy_meal — no carb gate needed, the category name itself is reliable", () => {
-    expect(isSelfContainedMeal("Khichdi", "dal_curry", 0)).toBe(true)
+  it("is true for a real khichdi even though its bucket is dal_curry, not heavy_meal", () => {
+    expect(isSelfContainedMeal("Khichdi", recipeCategoryBucket("Khichdi", "Moong Dal Khichdi"), 22.3)).toBe(true)
+    expect(isSelfContainedMeal("Khichdi", recipeCategoryBucket("Khichdi", "Bajre Ki Khichdi"), 11.6)).toBe(true)
+  })
+
+  // The CSV files porridges and Baingan Kachri (a brinjal sabzi) under
+  // "Khichdi"; counting them as a complete meal let a dinner go out with two
+  // sabzis and no roti or rice.
+  it("is false for a porridge or a sabzi filed under the Khichdi category", () => {
+    expect(recipeCategoryBucket("Khichdi", "Baingan Kachri")).toBe("sabzi")
+    expect(recipeCategoryBucket("Khichdi", "Kasha Porridge")).toBe("other")
+    expect(isSelfContainedMeal("Khichdi", recipeCategoryBucket("Khichdi", "Baingan Kachri"), 4.4)).toBe(false)
+    expect(isSelfContainedMeal("Khichdi", recipeCategoryBucket("Khichdi", "Kasha Porridge"), 22.9)).toBe(false)
   })
 
   it("is true for a 'Curry + Rice' category dish (e.g. Kuttu Kadhi With Samak Chawal)", () => {
@@ -86,5 +99,20 @@ describe("isSelfContainedMeal", () => {
   it("is false for an ordinary bread or rice dish", () => {
     expect(isSelfContainedMeal("Roti", "bread", 60)).toBe(false)
     expect(isSelfContainedMeal("Rice", "rice_pulao", 24)).toBe(false)
+  })
+})
+
+describe("isMealStaple", () => {
+  it("counts roti, paratha, thepla, rice, pulao and biryani", () => {
+    for (const category of ["Roti", "Paratha", "Thepla", "Rice", "Pulao", "Biryani"]) {
+      expect(isMealStaple(category, recipeCategoryBucket(category))).toBe(true)
+    }
+  })
+
+  // A real plan's lunch was a 10 g Colocasia Leaves Roll with dal and no roti or rice.
+  it("does not count a wrap, roll, sandwich or chilla", () => {
+    for (const category of ["Wrap & Roll", "Sandwich", "Chila"]) {
+      expect(isMealStaple(category, recipeCategoryBucket(category))).toBe(false)
+    }
   })
 })

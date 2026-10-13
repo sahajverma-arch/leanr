@@ -22,6 +22,18 @@ import type { RecipeCategoryBucket } from "./recipe-category"
 export const STRUCTURED_MEAL_SLOTS = new Set(["lunch", "dinner"])
 
 export const STAPLE_BUCKETS = new Set<RecipeCategoryBucket>(["bread", "rice_pulao"])
+
+// The "bread" bucket also holds wraps, rolls, sandwiches and chillas, so it
+// can stand in for a roti at breakfast. At lunch and dinner it cannot: a
+// dietitian rejected a plan whose lunches were a 10 g Colocasia Leaves Roll
+// with dal and no roti or rice. The staple there is a roti, paratha, thepla,
+// rice, pulao or biryani — nothing else.
+const NOT_A_MEAL_STAPLE = /wrap|roll|sandwich|chila|chilla/i
+
+/** A roti or a rice dish: what a lunch/dinner plate is built on. */
+export function isMealStaple(category: string, bucket: RecipeCategoryBucket): boolean {
+  return STAPLE_BUCKETS.has(bucket) && !NOT_A_MEAL_STAPLE.test(category)
+}
 export const DAL_BUCKET: RecipeCategoryBucket = "dal_curry"
 
 // ONE dal OR ONE sabzi per lunch/dinner, not both (dietitian rule,
@@ -79,6 +91,10 @@ const SELF_SUFFICIENT_DAL_CATEGORY_MARKERS = ["khichdi", "khichuri", "curry + ri
 /** True for a dish that's already a complete staple+dal/curry meal in one preparation — either a genuinely composite Heavy Meal/Light Meal (gated on real carb content, not the label alone) or Category text (Khichdi, "Curry + Rice"). */
 export function isSelfContainedMeal(category: string, bucket: RecipeCategoryBucket, carbsPer100G: number): boolean {
   if (COMPLETE_MEAL_BUCKETS.has(bucket)) return carbsPer100G >= MIN_COMPOSITE_CARBS_PER_100G
+  // Only a real khichdi stays in dal_curry (recipeCategoryBucket() moves a
+  // porridge or a sabzi filed under "Khichdi" out of it), and it must carry
+  // real grain: Bajre Ki Khichdi is the lightest real one at 11.6 g carbs.
+  if (bucket !== "dal_curry" || carbsPer100G < MIN_COMPOSITE_CARBS_PER_100G) return false
   const c = category.toLowerCase()
   return SELF_SUFFICIENT_DAL_CATEGORY_MARKERS.some((marker) => c.includes(marker))
 }
@@ -103,7 +119,7 @@ export function isCurryCourse(category: string, bucket: RecipeCategoryBucket, ca
   return CURRY_COURSE_BUCKETS.has(bucket) && !isSelfContainedMeal(category, bucket, carbsPer100G)
 }
 
-const STAPLE_LABEL = "a staple (Roti/Paratha/Bread and/or Rice/Pulao)"
+const STAPLE_LABEL = "a staple: Roti/Paratha/Thepla and/or Rice/Pulao (a wrap, roll, sandwich or chilla is NOT a staple here)"
 const CURRY_LABEL = "exactly ONE Dal/Curry OR ONE Sabzi (never both)"
 
 /** Rendered into the recipe-engine prompt (see recipe-prompt.ts) so the model sees the rule before it's ever checked against it. */
@@ -112,7 +128,7 @@ export function formatSlotStructureRules(slotNames: string[]): string {
   if (applicable.length === 0) return ""
   const lines = applicable.map(
     (s) =>
-      `- ${s} must include ${STAPLE_LABEL} AND ${CURRY_LABEL}. Then add a Salad and/or Curd/Raita alongside to fill the meal out; roti and rice may both be served. Never add a second dal, curry or sabzi to make the meal bigger: the staple, salad and curd make up the calories. A single composite dish that already has real carbs built in (Biryani, a Thali-style Rajma Chawal, a Khichdi) counts as the staple and dal on its own; never add a SEPARATE roti/rice beside one of these (a kadhi or sabzi beside a khichdi is fine). A plain grilled/roasted protein dish (Roasted Chicken, Grilled Fish) has NO carbs and still needs a staple. A real egg/chicken/fish dish is the meal's protein course by itself: pair it with a staple and a salad/curd, NEVER with a cooked Sabzi or Dal/Curry. Never anchor ${s} on soup, tea, dessert, or a liquid dish alone.`
+      `- ${s} must include ${STAPLE_LABEL} AND ${CURRY_LABEL}. Then add a Salad and/or Curd/Raita alongside to fill the meal out; roti and rice may both be served. Never add a second dal, curry or sabzi to make the meal bigger: the staple, salad and curd make up the calories. A single composite dish that already has real carbs built in (Biryani, a Thali-style Rajma Chawal, a real Khichdi — not a porridge) counts as the staple and dal on its own; never add a SEPARATE roti/rice beside one of these (a kadhi or sabzi beside a khichdi is fine). A plain grilled/roasted protein dish (Roasted Chicken, Grilled Fish) has NO carbs and still needs a staple. A real egg/chicken/fish dish is the meal's protein course by itself: pair it with a staple and a salad/curd, NEVER with a cooked Sabzi or Dal/Curry. Never anchor ${s} on soup, tea, dessert, or a liquid dish alone.`
   )
   return `\nMeal structure requirements (checked automatically — a day missing these gets sent back for a redo):\n${lines.join("\n")}\n`
 }

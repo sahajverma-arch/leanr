@@ -37,11 +37,21 @@ export type RecipeCategoryBucket =
   | "fruit"
   | "other"
 
+/** A real khichdi by name: rice/millet/dalia cooked with dal. "Veg Daliya" and "Bisi Bele Bath" are both. */
+const KHICHDI_NAME = /khich|bisi bele|dalia|daliya/i
+
 export function recipeCategoryBucket(category: string, name?: string): RecipeCategoryBucket {
   const c = category.toLowerCase()
   if (c.includes("heavy meal")) return "heavy_meal"
   if (c.includes("light meal")) return "light_meal"
   if (c.includes("sabzi")) return name && /curry/i.test(name) ? "dal_curry" : "sabzi"
+  // The CSV's "Khichdi" category is also where 13 porridges (Chia, Kasha,
+  // Mango Oats...) and Baingan Kachri, a brinjal sabzi, were filed. Only a
+  // dish whose NAME is a khichdi is one; the rest would otherwise count as a
+  // complete rice-and-dal meal and let a lunch go out with no roti or rice.
+  if (name && (c.includes("khichdi") || c.includes("khichuri")) && !KHICHDI_NAME.test(name)) {
+    return /porridge/i.test(name) ? "other" : "sabzi"
+  }
   if (c.includes("curry") || c.includes("dal") || c.includes("khichdi") || c.includes("khichuri")) return "dal_curry"
   if (c.includes("rice") || c.includes("pulao") || c.includes("biryani")) return "rice_pulao"
   // "Thepla" is a Gujarati flatbread — a roti in every structural sense. Left

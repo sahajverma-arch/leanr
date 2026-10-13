@@ -1541,6 +1541,30 @@ has the most protein on 234/287 days (stored plans: 163). These are old dish set
 either rule; a live generation, prompted for them, should do better — not yet measured live. Cost:
 repair CPU ~0.6 -> ~1.4 s per week, times N for best-of-N.
 
+### Every lunch and dinner has roti or rice (2026-10-13)
+
+**The complaint:** "two sabzi in one meal… you have to add roti or rice in lunch dinner." A real
+North Indian plan had a dinner of Baingan Kachri + Gajar Matar Sabzi, and three lunches built on a
+10-55 g Colocasia Leaves Roll / Cabbage Roll with dal. Two classification gaps:
+1. **The CSV's "Khichdi" category is not all khichdi.** It also holds 13 porridges (Chia, Kasha,
+   Mango Oats...) and Baingan Kachri, a brinjal sabzi, and every one counted as a complete
+   rice-and-dal meal, which waives the staple and the one-curry count. `recipeCategoryBucket()` now
+   keeps a "Khichdi" row in `dal_curry` only if its NAME is a khichdi (`/khich|bisi bele|dalia|
+   daliya/`); a porridge goes to `other`, anything else to `sabzi`. `isSelfContainedMeal()` also
+   requires 8 g carbs/100g for a khichdi (lightest real one: Bajre Ki Khichdi, 11.6).
+2. **A wrap counted as the staple.** The `bread` bucket holds wraps, rolls, sandwiches and chillas
+   (right for breakfast swaps). `isMealStaple()` is the lunch/dinner test: roti, paratha, thepla,
+   rice, pulao, biryani — not a wrap/roll/sandwich/chilla. Used by the validator, the 2-roti floor
+   and the prompt.
+
+`enforceStaple()` (recipe-repair.ts) is mandatory, like `enforceSingleCurry()`: a lunch/dinner with
+no staple gets a plain roti or rice, by turning its wrap/chilla into one or adding one, fewest
+plausibility problems then best macro fit. `repairWeek()` runs single-curry + staple first and
+again last, after variety and the day rules, since a swap that trades one problem for another keeps
+the count level and is accepted. **Replay over 42 saved plans:** meals with no roti/rice 29 -> 0,
+meals with 2+ dal/sabzi 268 -> 0 (both counted under the new rules); days within ±8% 260 -> 263;
+weeks passing 37 -> 37; meals within 15% of the equal-kcal share 194 -> 189.
+
 ### Weekday food rules are enforced (2026-10-01)
 
 **A non-vegetarian client marked "no non-veg or eggs on Monday" got Chicken Kathi Roll, Prawns Salad and

@@ -1,5 +1,5 @@
 import { recipeCategoryBucket } from "./recipe-category"
-import { STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
+import { isMealStaple, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import type { RecipeForPipeline as Recipe } from "./recipe-types"
 
 /**
@@ -41,7 +41,7 @@ export function getMealServingLimitsG(recipe: Recipe, slot: string, mealRecipes:
   const limits = getServingLimitsG(recipe)
   if (!STRUCTURED_MEAL_SLOTS.has(slot) || !isCountedRoti(recipe)) return limits
   const otherStaple = mealRecipes.some(
-    (other) => other !== recipe && STAPLE_BUCKETS.has(recipeCategoryBucket(other.category, other.name)) && !isCountedRoti(other)
+    (other) => other !== recipe && isMealStaple(other.category, recipeCategoryBucket(other.category, other.name)) && !isCountedRoti(other)
   )
   if (otherStaple) return limits
   const floor = Math.min(MIN_ROTIS_AS_ONLY_STAPLE * (recipe.perUnitGrams ?? 0), limits.max)

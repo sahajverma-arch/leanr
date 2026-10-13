@@ -8,7 +8,7 @@
 import { isAnimalProteinRecipe, isRecipeAllowedForDiet } from "@/lib/foods/recipe-animal-content"
 import { recipeAvoidanceConflict, type CompiledAvoidTerm } from "@/lib/foods/recipe-food-avoidance"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
-import { isCurryCourse, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MAX_CURRY_PER_MEAL, MEAT_CONFLICTING_BUCKETS, STAPLE_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
+import { isCurryCourse, isMealStaple, isSelfContainedMeal, LIQUID_MAIN_BUCKETS, MAX_CURRY_PER_MEAL, MEAT_CONFLICTING_BUCKETS, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { isMustHaveSatisfied } from "./recipe-pairing"
 import type { GroundedRecipeDay } from "./recipe-types"
 import { recipeDayRuleViolation, type DayRestriction } from "./day-food-rules"
@@ -172,15 +172,16 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
     // self-contained dish (Biryani-as-heavy-meal, a Thali-style row,
     // Khichdi, Kadhi-with-rice) satisfies this on its own, since it's
     // already a complete meal by construction.
+    const hasMealStaple = meal.items.some((item, i) => isMealStaple(item.recipe.category, itemBuckets[i]))
     if (STRUCTURED_MEAL_SLOTS.has(meal.slot)) {
       if (!hasSelfContainedDish) {
-        if (!itemBuckets.some((b) => STAPLE_BUCKETS.has(b))) {
-          problems.push(`${meal.slot} is missing a staple dish (Roti/Paratha/Bread or Rice/Pulao/Biryani) — a real ${meal.slot} needs one`)
+        if (!hasMealStaple) {
+          problems.push(`${meal.slot} is missing a staple dish (Roti/Paratha or Rice/Pulao/Biryani — a wrap, roll, sandwich or chilla does not count) — a real ${meal.slot} needs one`)
         }
         if (curryCourseNames.length === 0 && !hasRealAnimalProtein) {
           problems.push(`${meal.slot} is missing a Dal/Curry or Sabzi — a real ${meal.slot} needs a dal or a sabzi`)
         }
-      } else if (itemBuckets.some((b) => STAPLE_BUCKETS.has(b))) {
+      } else if (hasMealStaple) {
         // The opposite mistake — a REDUNDANT staple bolted onto a dish
         // that's already the staple+dal course. Direct dietitian
         // correction on a hand-built plan: "no one eats ajwain paratha
@@ -236,7 +237,7 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
           item.recipe.mustHaveCategories.length > 0 &&
           item.recipe.mustHaveCategories.every((c) => MEAT_SATISFIES_MARKERS.has(c.toLowerCase()))
         if (hasRealAnimalProtein && onlyWantsProteinCourse) continue
-        if (item.recipe.category.trim().toLowerCase() === RAITA_CATEGORY && (meal.slot === "breakfast" || itemBuckets.some((b) => STAPLE_BUCKETS.has(b)))) continue
+        if (item.recipe.category.trim().toLowerCase() === RAITA_CATEGORY && (meal.slot === "breakfast" || hasMealStaple)) continue
         const needs = [...item.recipe.mustHaveCategories, ...item.recipe.mustHaveRecipeNames].join(" / ")
         problems.push(`${meal.slot}'s "${item.recipe.name}" needs one of [${needs}] alongside it, but none is present`)
       }
