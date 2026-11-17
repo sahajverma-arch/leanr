@@ -41,3 +41,4 @@ supabase/.temp/
 # generated plan output from scripts/compose-plan.ts + render-plan-pdf.tsx (dev tools)
 /*.pdf
 /*.html
+config.bat

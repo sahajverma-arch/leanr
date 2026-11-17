@@ -8,7 +8,8 @@
  * fallback so plan generation always succeeds.
  */
 
-import { createOpenAIClient, OPENAI_MODEL } from "./openai-client"
+import { ANTHROPIC_MODEL, callClaude } from "./anthropic-client"
+import { extractJson } from "./llm-json"
 import { SYSTEM_PROMPT, buildUserPrompt } from "./food-selector-prompt"
 import { llmSelectionSchema } from "./food-selector-schema"
 import { toSelection, validateSelection } from "./food-selector-validate"
@@ -51,30 +52,27 @@ export async function selectFoods(
   const maxAttempts = options.maxAttempts ?? MAX_ATTEMPTS
   const userPrompt = buildUserPrompt(input)
   const promptHash = hashString(userPrompt)
-  const client = createOpenAIClient()
 
   for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++) {
     const startedAt = Date.now()
     let rawResponse: string | null = null
+    // The model that actually answered — the configured one unless a refusal
+    // fallback ran (see anthropic-client.ts).
+    let model = ANTHROPIC_MODEL
     let validationResult: { ok: boolean; errors: string[] } = { ok: false, errors: [] }
 
     try {
-      const completion = await client.chat.completions.create({
-        model: OPENAI_MODEL,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.2,
-      })
-
-      rawResponse = completion.choices[0]?.message?.content ?? null
+      const result = await callClaude([
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userPrompt },
+      ])
+      rawResponse = result.rawResponse
+      model = result.model
 
       if (!rawResponse) {
         validationResult = { ok: false, errors: ["Model returned an empty response."] }
       } else {
-        const parsed = JSON.parse(rawResponse)
+        const parsed = extractJson(rawResponse)
         const llmSelection = llmSelectionSchema.parse(parsed)
         const selection = toSelection(llmSelection)
         const errors = validateSelection(selection, input)
@@ -83,13 +81,13 @@ export async function selectFoods(
         if (errors.length === 0) {
           options.onAttempt?.({
             attemptNumber,
-            model: OPENAI_MODEL,
+            model,
             promptHash,
             rawResponse,
             validationResult,
             latencyMs: Date.now() - startedAt,
           })
-          return { selection, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: attemptNumber }
+          return { selection, generationMode: "ai", modelUsed: model, attempts: attemptNumber }
         }
       }
     } catch (err) {
@@ -98,7 +96,7 @@ export async function selectFoods(
 
     options.onAttempt?.({
       attemptNumber,
-      model: OPENAI_MODEL,
+      model,
       promptHash,
       rawResponse,
       validationResult,

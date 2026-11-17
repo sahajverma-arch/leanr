@@ -3,7 +3,7 @@
  * generated candidate weeks, which one best matches the client's target?
  *
  * Lives outside recipe-selector.ts purely so it is unit-testable — that file
- * imports openai-client.ts, which validates server env at module load. Same
+ * imports anthropic-client.ts, which validates server env at module load. Same
  * separation as recipe-day-diagnosis.ts / recipe-validate.ts.
  *
  * Ranking is two-level: a candidate that clears the acceptance gate always

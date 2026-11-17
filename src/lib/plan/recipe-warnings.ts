@@ -4,7 +4,7 @@
  *
  * Extracted from recipe-selector.ts so it can be reused by the plan-edit
  * path (a recipe swap re-balances the day and must recompute these) and
- * unit-tested — recipe-selector.ts imports openai-client.ts, which validates
+ * unit-tested — recipe-selector.ts imports anthropic-client.ts, which validates
  * server env at module load. Same separation as recipe-day-diagnosis.ts.
  */
 

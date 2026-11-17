@@ -18,7 +18,7 @@
  *
  * Food selection uses the deterministic fallback selector directly, not the
  * LLM — a seed script must be fast and reproducible on every machine
- * regardless of OpenAI credentials; real generations from the UI still try
+ * regardless of Anthropic credentials; real generations from the UI still try
  * the LLM first via POST /api/plan/generate.
  */
 import { eq, inArray } from "drizzle-orm"

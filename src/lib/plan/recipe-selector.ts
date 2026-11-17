@@ -11,7 +11,8 @@
  * LLM-only exemption here — see CLAUDE.md "The recipe engine").
  */
 
-import { createOpenAIClient, OPENAI_MODEL } from "./openai-client"
+import { ANTHROPIC_MODEL, callClaude } from "./anthropic-client"
+import { extractJson } from "./llm-json"
 import { buildDayRetryMessages, buildInitialMessages, type PromptMessage } from "./recipe-prompt"
 import { llmRecipeDaySchema, llmRecipeSelectionSchema } from "./recipe-schema"
 import { buildRecipeIndex, groundSelection, type RecipeIndex } from "./recipe-grounding"
@@ -66,6 +67,13 @@ interface RepairContext {
   constraints: ClientRecipeConstraints
 }
 
+/** One repaired whole-week attempt, with the model that actually composed it (see anthropic-client.ts on refusal fallback). */
+interface WeekCandidate {
+  days: GroundedRecipeDay[]
+  swaps: RepairSwap[]
+  model: string
+}
+
 export class RecipeSelectionRejectedError extends Error {
   constructor(
     message: string,
@@ -94,13 +102,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function extractJson(raw: string): unknown {
-  const start = raw.indexOf("{")
-  const end = raw.lastIndexOf("}")
-  if (start === -1 || end === -1) throw new Error("No JSON object found in model response")
-  return JSON.parse(raw.slice(start, end + 1))
-}
-
 /** How many days of the given week each recipe appears on — the variety cap's own unit, and the repair's weekly budget. */
 function countRecipeUse(days: GroundedRecipeDay[]): Map<string, number> {
   const counts = new Map<string, number>()
@@ -119,18 +120,6 @@ function dayNeedsRetry(day: GroundedRecipeDay, input: RecipeSelectorInput, const
     daysNeedingVarietyRetry.has(day.dayIndex) ||
     day.unknownRecipeNames.length > 0
   )
-}
-
-async function callModel(messages: PromptMessage[]): Promise<{ rawResponse: string | null; latencyMs: number }> {
-  const client = createOpenAIClient()
-  const startedAt = Date.now()
-  const completion = await client.chat.completions.create({
-    model: OPENAI_MODEL,
-    messages,
-    response_format: { type: "json_object" },
-    temperature: 0.3,
-  })
-  return { rawResponse: completion.choices[0]?.message?.content ?? null, latencyMs: Date.now() - startedAt }
 }
 
 /**
@@ -152,15 +141,19 @@ async function attemptWholeWeek(
   promptHash: string,
   attemptNumber: number,
   onAttempt?: (log: RecipeAttemptLog) => void
-): Promise<{ days: GroundedRecipeDay[]; swaps: RepairSwap[] } | null> {
+): Promise<WeekCandidate | null> {
   let rawResponse: string | null = null
   let latencyMs = 0
+  // The model that actually answered. Starts as the configured one (what a
+  // failed call is logged under) and is overwritten by the reply's own.
+  let model = ANTHROPIC_MODEL
   let validationResult: { ok: boolean; errors: string[] } = { ok: false, errors: [] }
 
   try {
-    const result = await callModel(messages)
+    const result = await callClaude(messages)
     rawResponse = result.rawResponse
     latencyMs = result.latencyMs
+    model = result.model
 
     if (!rawResponse) {
       validationResult = { ok: false, errors: ["Model returned an empty response."] }
@@ -173,14 +166,14 @@ async function attemptWholeWeek(
       // reach the target however their grams are solved. No extra call.
       const repaired = repairWeek(balanced, input.dailyTarget, repair.pool, repair.constraints)
       validationResult = { ok: true, errors: [] }
-      onAttempt?.({ attemptNumber, dayIndex: null, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
-      return repaired
+      onAttempt?.({ attemptNumber, dayIndex: null, model, promptHash, rawResponse, validationResult, latencyMs })
+      return { ...repaired, model }
     }
   } catch (err) {
     validationResult = { ok: false, errors: [err instanceof Error ? err.message : String(err)] }
   }
 
-  onAttempt?.({ attemptNumber, dayIndex: null, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
+  onAttempt?.({ attemptNumber, dayIndex: null, model, promptHash, rawResponse, validationResult, latencyMs })
   return null
 }
 
@@ -220,7 +213,7 @@ async function runBestOfNPhase(
       return attemptWholeWeek(input, index, repair, messages, hashString(JSON.stringify(messages)), i + 1, onAttempt)
     })
   )
-  const candidates = settled.filter((week): week is { days: GroundedRecipeDay[]; swaps: RepairSwap[] } => week !== null)
+  const candidates = settled.filter((week): week is WeekCandidate => week !== null)
 
   const best = pickBestWeek(
     candidates.map((c) => c.days),
@@ -244,9 +237,10 @@ async function runBestOfNPhase(
     )
   }
   // best.index is an index into the array pickBestWeek was handed, which is
-  // candidates in order — so this is the winning week's OWN repair log, not
-  // a merge of every candidate's.
-  return { days: best.days, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: candidates.length, swaps: candidates[best.index].swaps }
+  // candidates in order — so this is the winning week's OWN repair log and
+  // its OWN model, not a merge of every candidate's.
+  const winner = candidates[best.index]
+  return { days: best.days, generationMode: "ai", modelUsed: winner.model, attempts: candidates.length, swaps: winner.swaps }
 }
 
 async function runWholeWeekPhase(
@@ -262,12 +256,14 @@ async function runWholeWeekPhase(
   for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++) {
     let rawResponse: string | null = null
     let latencyMs = 0
+    let model = ANTHROPIC_MODEL
     let validationResult: { ok: boolean; errors: string[] } = { ok: false, errors: [] }
 
     try {
-      const result = await callModel(messages)
+      const result = await callClaude(messages)
       rawResponse = result.rawResponse
       latencyMs = result.latencyMs
+      model = result.model
 
       if (!rawResponse) {
         validationResult = { ok: false, errors: ["Model returned an empty response."] }
@@ -280,14 +276,14 @@ async function runWholeWeekPhase(
         // retry loop below then only has to deal with what code could not fix.
         const repaired = repairWeek(balancedDays, input.dailyTarget, repair.pool, repair.constraints)
         validationResult = { ok: true, errors: [] }
-        onAttempt?.({ attemptNumber, dayIndex: null, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
-        return { grounded: { days: repaired.days }, generationMode: "ai", modelUsed: OPENAI_MODEL, attempts: attemptNumber, swaps: repaired.swaps }
+        onAttempt?.({ attemptNumber, dayIndex: null, model, promptHash, rawResponse, validationResult, latencyMs })
+        return { grounded: { days: repaired.days }, generationMode: "ai", modelUsed: model, attempts: attemptNumber, swaps: repaired.swaps }
       }
     } catch (err) {
       validationResult = { ok: false, errors: [err instanceof Error ? err.message : String(err)] }
     }
 
-    onAttempt?.({ attemptNumber, dayIndex: null, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
+    onAttempt?.({ attemptNumber, dayIndex: null, model, promptHash, rawResponse, validationResult, latencyMs })
 
     if (attemptNumber < maxAttempts) {
       await sleep(BASE_BACKOFF_MS * 2 ** (attemptNumber - 1))
@@ -318,12 +314,14 @@ async function retryOneDay(
   const promptHash = hashString(JSON.stringify(messages))
   let rawResponse: string | null = null
   let latencyMs = 0
+  let model = ANTHROPIC_MODEL
   let validationResult: { ok: boolean; errors: string[] } = { ok: false, errors: [] }
 
   try {
-    const result = await callModel(messages)
+    const result = await callClaude(messages)
     rawResponse = result.rawResponse
     latencyMs = result.latencyMs
+    model = result.model
     if (!rawResponse) {
       validationResult = { ok: false, errors: ["Model returned an empty response."] }
     } else {
@@ -333,14 +331,14 @@ async function retryOneDay(
       const weeklyCounts = countRecipeUse(otherDays)
       const repaired = repairDay({ ...balanced, dayIndex: day.dayIndex }, input.dailyTarget, repair.pool, repair.constraints, weeklyCounts)
       validationResult = { ok: true, errors: [] }
-      onAttempt?.({ attemptNumber, dayIndex: day.dayIndex, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
+      onAttempt?.({ attemptNumber, dayIndex: day.dayIndex, model, promptHash, rawResponse, validationResult, latencyMs })
       return repaired
     }
   } catch (err) {
     validationResult = { ok: false, errors: [err instanceof Error ? err.message : String(err)] }
   }
 
-  onAttempt?.({ attemptNumber, dayIndex: day.dayIndex, model: OPENAI_MODEL, promptHash, rawResponse, validationResult, latencyMs })
+  onAttempt?.({ attemptNumber, dayIndex: day.dayIndex, model, promptHash, rawResponse, validationResult, latencyMs })
   return null
 }
 

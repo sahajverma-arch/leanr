@@ -7,8 +7,23 @@ const envSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
-  OPENAI_API_KEY: z.string().min(1),
-  OPENAI_MODEL: z.string().min(1),
+  ANTHROPIC_API_KEY: z.string().min(1),
+  // Optional, and a BLANK value means "not set" (same reasoning as
+  // RECIPE_BEST_OF_N below): an empty box in a hosting dashboard must not
+  // become an empty model id.
+  ANTHROPIC_MODEL: z
+    .string()
+    .optional()
+    .transform((v) => v?.trim() || "claude-opus-5-5"),
+  // How hard the model thinks before answering — the main latency/cost
+  // lever, since thinking cannot be switched off on the default model.
+  // "medium" is that model's own default, stated explicitly. Not yet tuned
+  // against real runs: try "low" if generation is too slow.
+  ANTHROPIC_EFFORT: z
+    .string()
+    .optional()
+    .transform((v) => v?.trim() || "medium")
+    .pipe(z.enum(["low", "medium", "high", "xhigh", "max"])),
   // Global kill switch for the Meal Archetype layer (archetype-selector.ts).
   // Defaults enabled — set to "false" to force archetypeSelectorEnabled to
   // false everywhere, independent of what's seeded in meal_archetypes, as a
@@ -59,8 +74,9 @@ const envSchema = z.object({
   // candidates clear the gate outright.
   //
   // The cost is token pressure, not time: 5 concurrent ~14k-token requests on
-  // a low API rate tier. openai-client.ts's 25s per-call timeout bounds that
-  // — a throttled call drops one candidate rather than failing the request.
+  // a low API rate tier. anthropic-client.ts's per-call deadline bounds that
+  // — a call still throttled at the deadline drops one candidate rather than
+  // failing the request.
   //
   // optionalBoundedInt, not z.coerce.number().default(): a BLANK value in a
   // hosting dashboard must mean "not set" (5), never 0 — 0 is the escape
@@ -74,8 +90,9 @@ const parsed = envSchema.safeParse({
   NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
+  ANTHROPIC_EFFORT: process.env.ANTHROPIC_EFFORT,
   ARCHETYPE_SELECTION_ENABLED: process.env.ARCHETYPE_SELECTION_ENABLED,
   RECIPE_ENGINE_ENABLED: process.env.RECIPE_ENGINE_ENABLED,
   DIETITIAN_KNOWLEDGE_ENABLED: process.env.DIETITIAN_KNOWLEDGE_ENABLED,
