@@ -1513,7 +1513,10 @@ those 4).
    roti-only plate (or roti beside rice), curd at breakfast — each accepted only if it narrows the gap,
    adds no plausibility problem, respects the repeat cap, and keeps the worst macro within 6% or no
    worse. The prompt says it too. What is left is a **warning**, never a reject (the gate is still the
-   weekly macro average).
+   weekly macro average). **The equal split was superseded 2026-11-03** by breakfast 15-20% / lunch
+   and dinner 25-30% each / the rest to the snacks — see "Calorie split across the day" below. The
+   machinery (balancer term, `enforceMealShape()`, warning-not-reject) is the same; only the shares
+   and the slots they cover changed.
 2. **Lunch/dinner: ONE dal OR ONE sabzi, never both** (replaces "one sabzi with one dal"), plus a
    staple (roti and/or rice), filled out with salad and curd. `MAX_CURRY_PER_MEAL`; a self-contained
    khichdi is not counted (khichdi + kadhi stays valid); a meat dish is still its own protein course.
@@ -1581,6 +1584,82 @@ Four dietitian corrections to how a quantity reads, plus the data behind them:
   coffee a cup, in ml. Soups and porridge stay in a bowl.
 The DB rows were updated in place with the same functions `seed-recipes.ts` uses. **Still open:**
 Banana Chips' macros are wrong in the sheet (~12 kcal/100 g); a dietitian must correct the row.
+
+### Calorie split across the day, condiments, and tighter side variety (2026-11-03)
+
+Three dietitian corrections from mid/late October, measured before anything was changed
+(`scripts/measure-meal-shares.ts`, read-only, over the 12 plans saved after the equal split landed
+on 13 Oct):
+
+1. **"Breakfast is too big ... both the snacks combined are way too small, almost negligible."**
+   Measured: breakfast a median 26% of the day's calories, lunch 30%, dinner 29%, mid-morning and
+   evening 13% COMBINED — i.e. the 12 Oct equal three-way split doing exactly what it said. The
+   dietitian's split is breakfast 15-20%, lunch and dinner 25-30% each, "the rest to snacks".
+   `recipe-meal-balance.ts` now carries `MEAL_KCAL_SHARES` — breakfast 0.175, lunch 0.275, dinner
+   0.275, mid_morning 0.1375, evening 0.1375 — the midpoints of those ranges, renormalised over the
+   slots a day actually has (a three-meal day splits 24/38/38); wake-up and bedtime keep what they
+   carry and come off the top, as the snacks did before. `MEAL_KCAL_SHARE_TOLERANCE` is ±2.5 points
+   OF THE DAY (the half-width of the stated ranges), replacing the old 15%-of-the-meal rule.
+   **The snack figure is the midpoint reading of "the rest", not a separately confirmed number** —
+   it gives mid-morning and evening ~14% each, which may be more than intended; it is one constant.
+   - `recipe-balancer.ts` pulls EVERY share slot toward its target, not only the three mains, at
+     `SLOT_KCAL_WEIGHT_FACTOR` (0.6) of the kcal weight — measured, not chosen: at full weight the
+     five terms' aggregate pull cost macro convergence on replay (days within ±8%: 326 → 319); at
+     0.6 it is 323, weeks passing 44 = baseline, and more days inside the split (170 → 177).
+   - `enforceMealShape()` now covers the snacks: it may ADD a fruit, a handful of nuts or a snack to
+     an under-filled mid-morning/evening (`SNACK_ADDITION_BUCKETS`, at most 2 items), and REMOVE a
+     side or condiment from any meal over its share (`REMOVED_TO_TRIM_MEAL`). Its score
+     (`mealShapeScore`) changed from the WORST slot's gap to the SUM of all slots' gaps — measured
+     reason: with a max, topping a snack up from 5% to 13% of the day was refused because breakfast,
+     still 10 points over, stayed the worst slot and the score barely moved. The stopping rule is
+     separate (`mealShapeWithinTolerance`: every slot within ±2.5 points).
+2. **"30 g peanut butter and mix veg raita in breakfast, which is not ideal at all."** Both were
+   side effects of the equal split: the shape repair's "curd at breakfast" list was EVERY
+   Raita-category side (Mixed Vegetable Raita, Pomegranate Raita...), and Peanut Butter — Category
+   "Spread", tagged MAIN in the source, 1180 kcal/100 g — sat in the catch-all `other` bucket beside
+   porridges, idli and upma, so the macro repair (which swaps within a bucket) could make it stand in
+   for a porridge when chasing fat. Confirmed in the saved 15 Oct plan: Peanut Butter at breakfast on
+   day 3, Mixed Vegetable Raita at breakfast on day 5. Fixes: breakfast additions are plain Curd only
+   (`isPlainCurd`); `recipe-category.ts` gained a `condiment` bucket (Spread, Chutney, Dip, pickle)
+   and a `nuts` bucket (Nuts, Seeds), so neither can be swapped for a dish or vice versa;
+   `recipe-plausibility-validate.ts` never counts a condiment as the MAIN item, flags a meal made only
+   of condiments, and flags a spread carrying more than `SPREAD_MAX_MEAL_KCAL_SHARE` (25%) of its
+   meal's calories; the prompt says the same. Chutney beside a chilla is untouched.
+3. **"Same sabzis and salads are still being repeated throughout the week, about 2-3 times."**
+   Measured on the same 12 plans: a sabzi twice in 11 of 52 cases, a salad or raita 3-4 times in 15
+   of 115 — all INSIDE the caps (dish 2, any mid side 4), so nothing corrected them.
+   `recipe-variety-tracker.ts` now has `varietyClassOf()`: a sabzi (bucket `sabzi`, paneer/tofu
+   bhurji included) at most ONCE a week (`MAX_SABZI_REPEATS_PER_WEEK`), a salad or flavoured raita at
+   most twice (`MAX_SALAD_REPEATS_PER_WEEK`) and never two days running, plain Curd stays a staple
+   side at 4. Every repair pass reads one `repeatCapFor()`, so the caps propagate everywhere; the
+   weekly rotation now suggests 10 sabzis and 8 salads; the prompt states the new caps.
+
+**Replay over all 53 saved recipe plans (371 days), old code → new** (`scripts/measure-meal-balance.ts
+--verbose`): median share breakfast 17% / mid-morning 13% / lunch 28% / evening 13% / dinner 28%;
+worst slot gap from its share, median 12 → 3 points of the day; sabzi dishes served more than once
+in a week 95 → 26; salads/raitas more than twice 67 → 3; days within ±8% 326 → 323; weeks passing
+44 → 44; plausibility problems 419 → 431 (none of the new condiment kinds among them); repair CPU
+62 → 107 s for 53 weeks (~2 s/week, ×N for best-of-N). These are old dish sets chosen under the old
+prompt; the live run is the real test.
+
+**One live best-of-5 run (Pritam, North Indian non-vegetarian, `scripts/measure-variety-live.ts`):**
+median share breakfast 17% / mid-morning 13% / lunch 28% / evening 14% / dinner 27%; weekly average
+kcal +0.1%, protein −0.4%, carbs 0.0%, fat +0.6%; nothing over a cap, no back-to-back repeat; no
+spread or raita at breakfast; 32 repair swaps, 21.7 s. Reading the week found one more correction:
+mid-morning had been topped up with a baked samosa, a mathri and a cookie beside the fruit, because
+one addition list served both snack slots. `SNACK_ADDITION_BUCKETS` is now per slot — mid-morning
+fruit and nuts only, evening also the chaat/tikki/namkeen snacks. **That refinement is unit-tested
+but not live-tested: the OpenAI account ran out of credits on the next call** (every attempt 429
+"You have no credits remaining"), which also means production generation is blocked until credits
+are added.
+
+**Still open:** the 26 remaining sabzi repeats on replay are weeks where no other sabzi fit inside
+the 6% macro slack, so they stay and are warned about; the dietitian's "ideal day" screenshot
+(15 Oct) was never shared, so nothing was checked against it; the snack share needs a dietitian's
+confirmation (see 1); the fixed-menu and plan-edit paths pick up the new split automatically through
+the shared balancer and warnings, not re-measured here; the live week still had a porridge inside a
+dinner (Multigrain Porridge beside rice and chicken) — the known bucket-level macro-repair gap
+recorded under "Variety across days, weeks and clients", unchanged by this work.
 
 ### Weekday food rules are enforced (2026-10-01)
 

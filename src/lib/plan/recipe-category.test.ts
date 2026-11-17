@@ -30,6 +30,15 @@ describe("recipeCategoryBucket", () => {
     expect(recipeCategoryBucket("Something Entirely Novel")).toBe("other")
   })
 
+  it("buckets spreads, chutneys and dips as condiments, and nuts/seeds as nuts — never beside porridges in 'other'", () => {
+    expect(recipeCategoryBucket("Spread", "Peanut Butter")).toBe("condiment")
+    expect(recipeCategoryBucket("Chutney", "Mint Chutney")).toBe("condiment")
+    expect(recipeCategoryBucket("Dip", "Hummus")).toBe("condiment")
+    expect(recipeCategoryBucket("Nuts", "3 Soaked Walnuts")).toBe("nuts")
+    expect(recipeCategoryBucket("Seeds", "Fitelo Chia Seeds")).toBe("nuts")
+    expect(recipeCategoryBucket("Khichdi", "Oatmeal Peanut Butter Porridge")).toBe("other")
+  })
+
   it("buckets a 'Sabzi'-category dish named '...Curry' as dal_curry (real regression: Rajma Curry, Kala Chana Curry, White Chana Curry are all Category=Sabzi)", () => {
     expect(recipeCategoryBucket("Sabzi", "Rajma Curry")).toBe("dal_curry")
     expect(recipeCategoryBucket("Sabzi", "Kala Chana Curry")).toBe("dal_curry")

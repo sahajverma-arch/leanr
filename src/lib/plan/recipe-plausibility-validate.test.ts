@@ -337,3 +337,29 @@ describe("describePlausibilityProblems", () => {
     expect(describePlausibilityProblems(day, constraints).some((p) => p.includes("needs one of"))).toBe(false)
   })
 })
+
+describe("condiments — spreads, chutneys, dips (a real 15 Oct breakfast was padded with peanut butter)", () => {
+  // Peanut Butter as ingested: Category Spread, tagged MAIN, 1180 kcal/100 g.
+  const peanutButter = makeRecipe({ name: "Peanut Butter", category: "Spread", mainOrMid: "main", proteinPer100G: 50, carbsPer100G: 20, fatPer100G: 100 })
+  const chilla = makeRecipe({ name: "Moong Dal Chilla", category: "Chila", proteinPer100G: 10, carbsPer100G: 20, fatPer100G: 5 })
+  const chutney = makeRecipe({ name: "Mint Chutney", category: "Chutney", mainOrMid: "mid", proteinPer100G: 1, carbsPer100G: 5, fatPer100G: 0.5 })
+
+  it("flags a spread carrying most of a meal's calories", () => {
+    // 30 g peanut butter = 390 kcal beside a 100 g chilla = 165 kcal.
+    const day = makeDay([{ slot: "breakfast", items: [{ recipe: chilla, grams: 100 }, { recipe: peanutButter, grams: 30 }] }])
+    const problems = describePlausibilityProblems(day, constraints)
+    expect(problems.some((p) => p.includes("Peanut Butter") && p.includes("spread carrying"))).toBe(true)
+  })
+
+  it("accepts a chutney beside a chilla — a condiment in its place", () => {
+    const day = makeDay([{ slot: "breakfast", items: [{ recipe: chilla, grams: 100 }, { recipe: chutney, grams: 20 }] }])
+    expect(describePlausibilityProblems(day, constraints)).toEqual([])
+  })
+
+  it("flags a meal that is only a condiment, and does not let a MAIN-tagged spread anchor a meal", () => {
+    const alone = makeDay([{ slot: "evening", items: [{ recipe: chutney, grams: 30 }] }])
+    expect(describePlausibilityProblems(alone, constraints).some((p) => p.includes("only a spread/chutney/dip"))).toBe(true)
+    const spreadAsMain = makeDay([{ slot: "breakfast", items: [{ recipe: peanutButter, grams: 15 }, { recipe: chutney, grams: 20 }] }])
+    expect(describePlausibilityProblems(spreadAsMain, constraints).some((p) => p.includes("no MAIN item"))).toBe(true)
+  })
+})

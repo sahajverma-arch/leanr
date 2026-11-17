@@ -38,12 +38,12 @@ import { isAnimalProteinRecipe } from "@/lib/foods/recipe-animal-content"
 import { recipeDayRuleViolation } from "./day-food-rules"
 import { balanceDayToTargets } from "./recipe-balancer"
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
-import { isMainMealSlot, MEAL_KCAL_BALANCE_TOLERANCE, mealShapeScore } from "./recipe-meal-balance"
+import { isMainMealSlot, isShareSlot, mealShapeScore, mealShapeWithinTolerance, slotKcalTargets } from "./recipe-meal-balance"
 import { isCurryCourse, isMealStaple, isSelfContainedMeal, MAX_CURRY_PER_MEAL, SIDE_BUCKET, STRUCTURED_MEAL_SLOTS } from "./recipe-meal-structure"
 import { describePlausibilityProblems, type ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import type { DailyRecipeTarget, GroundedRecipeDay, GroundedRecipeItem, RecipeAchievedMacros, RecipeForPipeline } from "./recipe-types"
 import { RECIPE_MACRO_TOLERANCE } from "./recipe-validate"
-import { isEverydayStaple, repeatCapFor } from "./recipe-variety-tracker"
+import { isEverydayStaple, isPlainCurd, repeatCapFor } from "./recipe-variety-tracker"
 
 /**
  * The macros the repair steers on — the same four recipe-validate.ts gates
@@ -516,14 +516,29 @@ function ensureRegionalDish(
 
 /** A plate-shape move may leave the day's worst macro up to here — the same slack a regional or variety swap gets. */
 export const MEAL_SHAPE_DEVIATION_CEILING = REGIONAL_DEVIATION_CEILING
-const MAX_MEAL_SHAPE_MOVES_PER_DAY = 4
+/** Five share slots can each need a move; a guard, not a target. */
+const MAX_MEAL_SHAPE_MOVES_PER_DAY = 6
 /** Candidates are ranked cheaply first (no re-balance); only this many are fully re-balanced per round. */
-const MAX_MEAL_SHAPE_EVALUATIONS = 30
-/** A move must close the plate-shape gap by at least this much to be worth a change. */
-const MIN_SHAPE_IMPROVEMENT = 0.02
+const MAX_MEAL_SHAPE_EVALUATIONS = 40
+/** A move must close the plate-shape gap by at least this much — half a point of the day's calories — to be worth a change. */
+const MIN_SHAPE_IMPROVEMENT = 0.005
+/** A mid-morning or evening snack is at most this many items: a fruit with a handful of nuts, a chaat with a chai. */
+const MAX_SNACK_ITEMS = 2
+/**
+ * What an under-filled snack slot may be topped up with. Never a condiment,
+ * never a dish from "other". Mid-morning is fruit and nuts only: on the first
+ * live run with one list for both slots it got a baked samosa, a mathri and a
+ * cookie beside the fruit. The chaat/tikki/namkeen snacks belong at evening.
+ */
+const SNACK_ADDITION_BUCKETS: Readonly<Record<string, readonly RecipeCategoryBucket[]>> = {
+  mid_morning: ["fruit", "nuts"],
+  evening: ["snack", "fruit", "nuts"],
+}
 
 /** RepairSwap.from for a dish ADDED to fill a meal out, rather than swapped in. */
 export const ADDED_TO_FILL_MEAL = "(added to fill the meal out)"
+/** RepairSwap.to for a side taken off a meal that carried more than its share of the day's calories. */
+export const REMOVED_TO_TRIM_MEAL = "(removed: meal over its calorie share)"
 
 const ROTI_FAMILY = "roti|main"
 const RICE_FAMILY = "rice|main"
@@ -547,26 +562,32 @@ function addItem(day: GroundedRecipeDay, mealIndex: number, recipe: RecipeForPip
 }
 
 /**
- * Breakfast, lunch and dinner carry an equal share of the day's calories, and
- * the dietitian's protein-rich meal carries the most protein (recipe-meal-
+ * Each meal carries its share of the day's calories — breakfast 15-20%, lunch
+ * and dinner 25-30%, the rest to mid-morning and evening — and the
+ * dietitian's protein-rich meal carries the most protein (recipe-meal-
  * balance.ts). recipe-balancer.ts already steers the grams toward both, but
  * grams alone cannot get there when the DISHES are wrong for it: measured on
- * the saved plans, the typical miss is a breakfast of one chilla whose
- * authored maximum is ~110 g — about 220 kcal against a 450 kcal share, at
- * any gram setting.
+ * the saved plans, a snack of one fruit tops out at its authored maximum
+ * (~100 kcal) against a ~250 kcal share, and a breakfast of two parathas
+ * with curd cannot shrink to a ~315 kcal share, at any gram setting.
  *
  * So, like the regional and variety passes, this changes dishes:
- *   - swap a main-meal dish for another of the same varietyFamily() (a light
- *     chilla for a fuller one, a dal for a higher-protein dal), own-cuisine
- *     dishes only for own-cuisine dishes;
- *   - ADD to an under-filled meal the way the dietitian asked meals to be
+ *   - swap a dish for another of the same varietyFamily() (a light chilla
+ *     for a fuller one, a dal for a higher-protein dal), own-cuisine dishes
+ *     only for own-cuisine dishes;
+ *   - ADD to a meal under its share, the way the dietitian asked meals to be
  *     filled out — a salad or curd/raita at lunch or dinner, rice beside a
- *     roti-only plate or roti beside a rice-only one, curd at breakfast.
+ *     roti-only plate or roti beside a rice-only one, PLAIN curd at
+ *     breakfast (a vegetable or fruit raita is a lunch side: "mix veg raita
+ *     in breakfast ... not ideal at all"), a fruit, a handful of nuts or a
+ *     snack at mid-morning or evening;
+ *   - REMOVE a side or condiment from a meal over its share.
  * A move is accepted only if it narrows the plate-shape gap, adds no
  * plausibility problem (so no second curry, no meat beside a dal, no broken
- * weekday rule), respects the weekly repeat cap, and leaves the day's worst
- * macro within MEAL_SHAPE_DEVIATION_CEILING or no worse than before. What it
- * cannot fix is reported as a warning by describeMealBalanceProblems().
+ * weekday rule, no spread carrying the meal), respects the weekly repeat cap,
+ * and leaves the day's worst macro within MEAL_SHAPE_DEVIATION_CEILING or no
+ * worse than before. What it cannot fix is reported as a warning by
+ * describeMealBalanceProblems().
  */
 export function enforceMealShape(
   day: GroundedRecipeDay,
@@ -581,18 +602,27 @@ export function enforceMealShape(
   const allowedToday = allowedOnDay(constraints, day.dayIndex)
   const usable = (recipe: RecipeForPipeline) => allowedToday(recipe) && (weeklyCounts.get(recipe.name) ?? 0) < repeatCapFor(recipe)
   const vegSides = (pool.byBucket.get(SIDE_BUCKET) ?? []).filter((r) => !isAnimalProteinRecipe(r))
-  const curds = vegSides.filter((r) => r.category.trim().toLowerCase() === "raita")
+  const plainCurds = vegSides.filter(isPlainCurd)
+  const snackAdditionsFor = (slot: string) =>
+    (SNACK_ADDITION_BUCKETS[slot] ?? []).flatMap((bucket) => pool.byBucket.get(bucket) ?? []).filter((r) => !isAnimalProteinRecipe(r))
+  const kcalOf = (meal: GroundedRecipeDay["meals"][number]) => meal.items.reduce((s, i) => s + (i.recipe.kcalPer100G * i.grams) / 100, 0)
 
   let current = day
   let shape = mealShapeScore(current, target)
-  for (let round = 0; round < MAX_MEAL_SHAPE_MOVES_PER_DAY && shape > MEAL_KCAL_BALANCE_TOLERANCE; round++) {
+  for (let round = 0; round < MAX_MEAL_SHAPE_MOVES_PER_DAY && !mealShapeWithinTolerance(current, target); round++) {
     const allowedWorst = Math.max(worstRelativeDeviation(current.totals, target), MEAL_SHAPE_DEVIATION_CEILING)
     const baselineProblems = describePlausibilityProblems(current, constraints).length
     const moves: { next: GroundedRecipeDay; swap: RepairSwap; estimate: number }[] = []
     const consider = (next: GroundedRecipeDay, swap: RepairSwap) => moves.push({ next, swap, estimate: mealShapeScore(next, target) })
+    const slotTargets = slotKcalTargets(
+      current.meals.filter((m) => m.items.length > 0).map((m) => ({ slot: m.slot, kcal: kcalOf(m) })),
+      target.kcal
+    )
 
     current.meals.forEach((meal, mealIndex) => {
-      if (!isMainMealSlot(meal.slot) || meal.items.length === 0) return
+      const want = slotTargets.get(meal.slot)
+      if (want === undefined || meal.items.length === 0) return
+      const have = kcalOf(meal)
       const namesInMeal = new Set(meal.items.map((item) => item.recipe.name))
       const fresh = (r: RecipeForPipeline) => !namesInMeal.has(r.name) && usable(r)
 
@@ -608,19 +638,29 @@ export function enforceMealShape(
       })
 
       const buckets = meal.items.map((item) => recipeCategoryBucket(item.recipe.category, item.recipe.name))
-      const selfContained = meal.items.some((item, i) => isSelfContainedMeal(item.recipe.category, buckets[i], item.recipe.carbsPer100G))
-      const additions: RecipeForPipeline[] = []
-      if (STRUCTURED_MEAL_SLOTS.has(meal.slot)) {
-        if (!buckets.includes(SIDE_BUCKET)) additions.push(...vegSides)
-        const families = new Set(meal.items.map((item) => varietyFamily(item.recipe)))
-        if (!selfContained && families.has(ROTI_FAMILY) && !buckets.includes("rice_pulao")) additions.push(...(pool.byFamily.get(RICE_FAMILY) ?? []))
-        if (!selfContained && families.has(RICE_FAMILY) && !buckets.includes("bread")) additions.push(...(pool.byFamily.get(ROTI_FAMILY) ?? []))
-      } else if (meal.slot === "breakfast" && !buckets.includes(SIDE_BUCKET)) {
-        additions.push(...curds)
-      }
-      for (const recipe of additions) {
-        if (!fresh(recipe)) continue
-        consider(addItem(current, mealIndex, recipe), { dayIndex: current.dayIndex, slot: meal.slot, from: ADDED_TO_FILL_MEAL, to: recipe.name })
+      if (have < want) {
+        const selfContained = meal.items.some((item, i) => isSelfContainedMeal(item.recipe.category, buckets[i], item.recipe.carbsPer100G))
+        const additions: RecipeForPipeline[] = []
+        if (STRUCTURED_MEAL_SLOTS.has(meal.slot)) {
+          if (!buckets.includes(SIDE_BUCKET)) additions.push(...vegSides)
+          const families = new Set(meal.items.map((item) => varietyFamily(item.recipe)))
+          if (!selfContained && families.has(ROTI_FAMILY) && !buckets.includes("rice_pulao")) additions.push(...(pool.byFamily.get(RICE_FAMILY) ?? []))
+          if (!selfContained && families.has(RICE_FAMILY) && !buckets.includes("bread")) additions.push(...(pool.byFamily.get(ROTI_FAMILY) ?? []))
+        } else if (meal.slot === "breakfast") {
+          if (!buckets.includes(SIDE_BUCKET)) additions.push(...plainCurds)
+        } else if (isShareSlot(meal.slot) && meal.items.length < MAX_SNACK_ITEMS) {
+          additions.push(...snackAdditionsFor(meal.slot))
+        }
+        for (const recipe of additions) {
+          if (!fresh(recipe)) continue
+          consider(addItem(current, mealIndex, recipe), { dayIndex: current.dayIndex, slot: meal.slot, from: ADDED_TO_FILL_MEAL, to: recipe.name })
+        }
+      } else if (have > want && meal.items.length > 1) {
+        // Only a side or a condiment comes off, never the meal's dish.
+        meal.items.forEach((item, itemIndex) => {
+          if (item.recipe.mainOrMid !== "mid" && buckets[itemIndex] !== "condiment") return
+          consider(removeItem(current, mealIndex, itemIndex), { dayIndex: current.dayIndex, slot: meal.slot, from: item.recipe.name, to: REMOVED_TO_TRIM_MEAL })
+        })
       }
     })
 
@@ -647,7 +687,7 @@ export function enforceMealShape(
 
     if (best.swap.from !== SWAPPED_LUNCH_AND_DINNER) {
       if (best.swap.from !== ADDED_TO_FILL_MEAL) weeklyCounts.set(best.swap.from, Math.max(0, (weeklyCounts.get(best.swap.from) ?? 1) - 1))
-      weeklyCounts.set(best.swap.to, (weeklyCounts.get(best.swap.to) ?? 0) + 1)
+      if (best.swap.to !== REMOVED_TO_TRIM_MEAL) weeklyCounts.set(best.swap.to, (weeklyCounts.get(best.swap.to) ?? 0) + 1)
     }
     swaps.push(best.swap)
     current = best.day

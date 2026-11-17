@@ -1,7 +1,7 @@
 /**
  * Dev tool: run the production selectRecipes() for several real roadmaps and
  * report how varied the resulting weeks are — within each week and across
- * them. Makes real OpenAI calls (RECIPE_BEST_OF_N per run). Never writes.
+ * them. Makes real Claude API calls (RECIPE_BEST_OF_N per run). Never writes.
  *
  *   npx tsx --env-file=.env.local scripts/measure-variety-live.ts "North Indian" <roadmapId>... [--runs 1] [--no-seed]
  *
@@ -14,6 +14,8 @@ import { randomUUID } from "crypto"
 import { buildRecipeRunContext } from "./lib/recipe-run-input"
 import type { RecipeCuisine } from "../src/lib/foods/recipe-cuisine-mapping"
 import { env } from "../src/lib/env"
+import { describeMealBalanceProblems } from "../src/lib/plan/recipe-meal-balance"
+import { describePlausibilityProblems } from "../src/lib/plan/recipe-plausibility-validate"
 import { selectRecipes } from "../src/lib/plan/recipe-selector"
 import type { GroundedRecipeDay } from "../src/lib/plan/recipe-types"
 import { computeWeeklyAverage } from "../src/lib/plan/recipe-week-score"
@@ -58,8 +60,23 @@ async function main() {
       console.log(
         `  weekly avg vs target: kcal ${pct(avg.kcal, ctx.dailyTarget.kcal)}, P ${pct(avg.proteinG, ctx.dailyTarget.proteinG)}, C ${pct(avg.carbsG, ctx.dailyTarget.carbsG)}, F ${pct(avg.fatG, ctx.dailyTarget.fatG)}`
       )
-      for (const slot of ["breakfast", "lunch", "dinner", "evening"]) {
-        console.log(`  ${slot.padEnd(9)} ${days.map((d) => d.meals.find((m) => m.slot === slot)?.items.map((i) => i.recipe.name).join(" + ") ?? "-").join(" | ")}`)
+      // Calorie split per slot (recipe-meal-balance.ts): median share of the day, over the 7 days.
+      const kcalOf = (m: GroundedRecipeDay["meals"][number]) => m.items.reduce((s, i) => s + (i.recipe.kcalPer100G * i.grams) / 100, 0)
+      const shareOf = (slot: string) => {
+        const shares = days
+          .map((d) => {
+            const total = d.meals.reduce((s, m) => s + kcalOf(m), 0)
+            const meal = d.meals.find((m) => m.slot === slot)
+            return meal && total > 0 ? kcalOf(meal) / total : null
+          })
+          .filter((x): x is number => x !== null)
+          .sort((a, b) => a - b)
+        return shares.length > 0 ? `${(shares[Math.floor(shares.length / 2)] * 100).toFixed(0)}%` : "-"
+      }
+      console.log(`  split (median share of day kcal): ${["breakfast", "mid_morning", "lunch", "evening", "dinner"].map((s) => `${s} ${shareOf(s)}`).join(", ")}`)
+      console.log(`  plausibility problems: ${days.flatMap((d) => describePlausibilityProblems(d, ctx.constraints)).length}; meal-balance warnings: ${days.flatMap((d) => describeMealBalanceProblems(d, ctx.dailyTarget.kcal, ctx.dailyTarget.proteinG, ctx.dailyTarget.proteinRichSlot)).length} day(s)`)
+      for (const slot of ["breakfast", "mid_morning", "lunch", "evening", "dinner"]) {
+        console.log(`  ${slot.padEnd(11)} ${days.map((d) => d.meals.find((m) => m.slot === slot)?.items.map((i) => `${i.recipe.name} ${i.grams}g`).join(" + ") ?? "-").join(" | ")}`)
       }
       weeks.push({ label: `${ctx.clientName} #${run + 1}`, days })
     }

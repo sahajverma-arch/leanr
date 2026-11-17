@@ -10,7 +10,7 @@
 import { describeAvoids, type DayRestriction } from "./day-food-rules"
 import type { RetrievedDietPlanExample } from "./diet-plan-example-retrieval"
 import type { RetrievedKnowledgeChunk } from "./knowledge-retrieval"
-import { isMainMealSlot, mainMealLabel, PROTEIN_RICH_SHARE } from "./recipe-meal-balance"
+import { isMainMealSlot, isShareSlot, PROTEIN_RICH_SHARE, slotKcalTargets } from "./recipe-meal-balance"
 import { formatSlotStructureRules } from "./recipe-meal-structure"
 import type { DailyRecipeTarget, GroundedRecipeDay, RecipeForPrompt, RecipeSelectorInput } from "./recipe-types"
 import { buildWeekRotation, formatRotationSection, recentDishNames, seededShuffle } from "./recipe-week-rotation"
@@ -27,7 +27,8 @@ Rules:
 - PROTEIN IS THE TARGET THAT GETS MISSED, every time, and it is missed LOW. A normal-looking Indian day of roti, rice, sabzi, fruit and tea lands well under the protein target while overshooting carbs — measured repeatedly, not hypothetical. Every lunch and dinner must include at least one genuinely protein-dense dish (dal, chana, rajma, sprouts, paneer, tofu, soya, egg, curd, chicken or fish — read the Protein/100g column and prefer the higher numbers), and breakfast should usually include one too. Cereals, vegetables and fruit cannot reach the protein total no matter how much of them is served, so do not rely on them for it.
 - If a choice is between two otherwise-equally-realistic dishes, take the one with more protein per 100g and less carbohydrate per 100g. Carbs are the easiest macro to overshoot: rice, roti, paratha, poha, upma and potato add up faster than they look.
 - The day's targets are a whole-day total across every meal, not just one meal — a day built mostly from light snacks and beverages will fall far short of EVERY target even if each individual item looks reasonable. Weigh a lunch/dinner choice by how much it actually contributes toward the day's total, not just whether it's a plausible thing to eat.
-- VARIETY: vary the week the way a real household would. A dish (a dal, curry, sabzi, paratha, chilla or snack) at most twice in 7 days, never on two days in a row, and never at both lunch and dinner on the same day. A plain roti or rice, curd, salad, chutney or chaas at most 4 times — rotate between the different rotis and rices in the table. Rotate the protein dish through the whole range of dals and curries (arhar, moong, masoor, urad, chana dal, mixed dal, dal palak, kadhi, rajma, chole, paneer, soya...), not the same two or three. Code checks all of this and replaces repeats, so a varied week keeps more of your choices.
+- VARIETY: vary the week the way a real household would. A SABZI (any dry vegetable dish, paneer/tofu bhurji included) at most ONCE in 7 days — 14 lunches and dinners, so a different sabzi every time one is served. A salad or a flavoured raita at most twice. Any other dish (a dal, curry, paratha, chilla or snack) at most twice, never on two days in a row, and never at both lunch and dinner on the same day. A plain roti or rice, plain curd, chutney or chaas at most 4 times — rotate between the different rotis and rices in the table. Rotate the protein dish through the whole range of dals and curries (arhar, moong, masoor, urad, chana dal, mixed dal, dal palak, kadhi, rajma, chole, paneer, soya...), not the same two or three. Code checks all of this and replaces repeats, so a varied week keeps more of your choices.
+- A spread (peanut butter, nutella, mayonnaise, hung curd), a chutney or a dip is a CONDIMENT: a spoonful beside a dish, never a dish on its own, and never a way to make a meal bigger. Do not put peanut butter or a vegetable raita in breakfast.
 - Commonality is a tie-breaker between otherwise-similar choices, not a reason to fill every meal with the simplest, most common snack or drink — hitting the day's calorie/macro totals with a substantial lunch and dinner matters more than commonality.
 - You may be given a short "Dietitian guidance" section for this client's region and goal — treat it as an experienced Indian dietitian's real judgment about realistic combinations, alongside (never instead of) the recipe table and targets above.
 - You may also be given "Real example day(s)" — actual complete days built by real dietitians for a similar client. These carry MORE weight than the general Dietitian guidance bullets above: when an example's specific structure conflicts with a general guidance bullet, follow the example. Neither ever overrides the recipe table or the numeric daily targets.
@@ -80,17 +81,21 @@ function formatDailyTarget(target: DailyRecipeTarget): string {
 }
 
 /**
- * Breakfast, lunch and dinner are equal in calories, and the dietitian may
- * pick one of them to be protein-rich (recipe-meal-balance.ts). Descriptive
- * only: the model still names dishes, recipe-balancer.ts sets every gram, and
- * recipe-repair.ts's enforceMealShape() fixes what the choice of dishes gets
- * wrong. "" when the day has fewer than two main meals.
+ * Each meal's share of the day's calories — breakfast 15-20%, lunch and
+ * dinner 25-30%, the rest to the snacks — and the dietitian's protein-rich
+ * meal (recipe-meal-balance.ts). Descriptive only: the model still names
+ * dishes, recipe-balancer.ts sets every gram, and recipe-repair.ts's
+ * enforceMealShape() fixes what the choice of dishes gets wrong. "" when the
+ * day has fewer than two meals with a share.
  */
 export function formatMealBalanceSection(slotNames: string[], target: DailyRecipeTarget): string {
-  const mains = slotNames.filter(isMainMealSlot)
-  if (mains.length < 2) return ""
+  const shared = slotNames.filter(isShareSlot)
+  if (shared.length < 2) return ""
+  // The exact split for THIS day's slots, so the prompt and the code agree.
+  const targets = slotKcalTargets(shared.map((slot) => ({ slot, kcal: 0 })), 1)
+  const split = shared.map((slot) => `${slot} ~${Math.round((targets.get(slot) ?? 0) * 100)}%`).join(", ")
   const lines = [
-    `- ${mains.map(mainMealLabel).join(", ")} must be roughly EQUAL in calories — each is a full meal of about the same size. Breakfast is not a light snack: give it a staple plus a protein dish or curd (two chillas or parathas with curd, poha with sprouts, eggs with toast), never a single light item or a drink alone. The small in-between meals stay small.`,
+    `- Calorie split across the day (${split}): breakfast is a real but MODERATE meal — about 15-20% of the day, one breakfast dish (chilla, paratha, poha, upma, idli, eggs) with plain curd or a protein side, NOT a third full meal, and never padded with a spread or a vegetable raita. Lunch and dinner are the two big meals, 25-30% each. Mid-morning and evening are REAL snacks that carry the rest (roughly 10-15% each): a fruit with a handful of nuts, a chaat, sprouts, a chilla or a sandwich with chai — never a bare tea or a tiny portion.`,
   ]
   const rich = target.proteinRichSlot && isMainMealSlot(target.proteinRichSlot) ? target.proteinRichSlot : null
   if (rich) {

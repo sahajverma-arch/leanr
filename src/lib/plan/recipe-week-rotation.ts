@@ -20,7 +20,7 @@
 
 import { recipeCategoryBucket, type RecipeCategoryBucket } from "./recipe-category"
 import type { RecipeForPrompt } from "./recipe-types"
-import { isEverydayStaple } from "./recipe-variety-tracker"
+import { isEverydayStaple, isPlainCurd } from "./recipe-variety-tracker"
 
 /** 32-bit string hash — the same small rolling hash this codebase duplicates per file on purpose (see CLAUDE.md). */
 function stableHash(input: string): number {
@@ -103,9 +103,16 @@ const ROTATION_GROUPS: RotationGroup[] = [
       r.mainOrMid === "main" && ["dal", "curry"].includes(r.category.trim().toLowerCase()) && r.proteinPer100G >= MIN_PROTEIN_DAL_SUGGESTION,
   },
   {
-    label: "Sabzis for lunch/dinner",
-    count: 8,
+    label: "Sabzis for lunch/dinner (each at most once this week)",
+    // 10, not 8: a sabzi may appear only once a week (recipe-variety-
+    // tracker.ts), and roughly half the 14 lunches/dinners carry one.
+    count: 10,
     pick: (r, bucket) => r.mainOrMid === "main" && bucket === "sabzi",
+  },
+  {
+    label: "Salads and raitas to rotate between (each at most twice)",
+    count: 8,
+    pick: (r, bucket) => bucket === "salad" && !isPlainCurd(r),
   },
   {
     label: "Rotis to rotate between",

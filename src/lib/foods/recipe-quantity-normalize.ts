@@ -47,6 +47,9 @@ const CATEGORY_DEFAULT_LIMITS: Record<RecipeCategoryBucket, { min: number; max: 
   soup: { min: 150, max: 300, ideal: 200 },
   beverage: { min: 100, max: 300, ideal: 200 },
   fruit: { min: 80, max: 200, ideal: 120 },
+  // A spoonful or two beside a dish; a small handful.
+  condiment: { min: 10, max: 30, ideal: 15 },
+  nuts: { min: 10, max: 30, ideal: 20 },
   other: { min: 50, max: 200, ideal: 100 },
 }
 

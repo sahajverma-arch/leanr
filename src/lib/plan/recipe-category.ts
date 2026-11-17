@@ -35,6 +35,8 @@ export type RecipeCategoryBucket =
   | "soup"
   | "beverage"
   | "fruit"
+  | "condiment"
+  | "nuts"
   | "other"
 
 /** A real khichdi by name: rice/millet/dalia cooked with dal. "Veg Daliya" and "Bisi Bele Bath" are both. */
@@ -64,5 +66,14 @@ export function recipeCategoryBucket(category: string, name?: string): RecipeCat
   if (c.includes("soup")) return "soup"
   if (c.includes("smoothie") || c.includes("juice") || c.includes("water") || c.includes("cereal")) return "beverage"
   if (c.includes("fruit")) return "fruit"
+  // A spread, chutney or dip is a CONDIMENT: a spoonful beside a dish, never
+  // a dish. Until 2026-11-03 these sat in "other" beside porridges, idli and
+  // upma, so the macro repair — which swaps within a bucket — could turn a
+  // porridge into Peanut Butter (1180 kcal/100 g, tagged MAIN in the source).
+  // A real 15 Oct plan served exactly that at breakfast.
+  if (c.includes("spread") || c.includes("chutney") || c.includes("dip") || c.includes("pickle") || c.includes("achar")) return "condiment"
+  // Nuts and seeds: a handful beside a fruit is what a mid-morning snack is
+  // made of, so recipe-repair.ts can ADD one to an under-filled snack slot.
+  if (c.includes("nuts") || c.includes("seeds") || c.includes("dry fruit")) return "nuts"
   return "other"
 }

@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest"
 
 import { balanceDayToTargets } from "./recipe-balancer"
-import { buildRepairPool, enforceMealShape, enforceSingleCurry, enforceVariety, repairDay, repairWeek, swapMealContents, worstRelativeDeviation, REPAIR_TARGET_DEVIATION } from "./recipe-repair"
+import {
+  ADDED_TO_FILL_MEAL,
+  buildRepairPool,
+  enforceMealShape,
+  enforceSingleCurry,
+  enforceVariety,
+  REMOVED_TO_TRIM_MEAL,
+  repairDay,
+  repairWeek,
+  swapMealContents,
+  worstRelativeDeviation,
+  REPAIR_TARGET_DEVIATION,
+} from "./recipe-repair"
 import { mealShapeScore } from "./recipe-meal-balance"
 import type { ClientRecipeConstraints } from "./recipe-plausibility-validate"
 import { makeRecipe } from "./test-fixtures"
 import type { DailyRecipeTarget, GroundedRecipeDay, RecipeForPipeline } from "./recipe-types"
-import { findBackToBackRepeats, findVarietyViolations, MAX_RECIPE_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
+import { findBackToBackRepeats, findVarietyViolations, MAX_SABZI_REPEATS_PER_WEEK } from "./recipe-variety-tracker"
 
 const constraints: ClientRecipeConstraints = {
   dietType: "vegetarian",
@@ -106,10 +118,20 @@ describe("repairDay", () => {
     const day = makeDay([pipeline(stodge)], target)
     const pool = buildRepairPool([pipeline(stodge), pipeline(lean)])
 
-    const spent = new Map([["Lean Sabzi", MAX_RECIPE_REPEATS_PER_WEEK]])
+    const spent = new Map([["Lean Sabzi", MAX_SABZI_REPEATS_PER_WEEK]])
     const result = repairDay(day, target, pool, constraints, spent)
 
     expect(result.swaps).toEqual([])
+  })
+
+  it("never turns a porridge into a spread: a condiment is its own bucket", () => {
+    // Peanut Butter is tagged MAIN in the source and is the best fat lever in the pool. It must still never stand in for a porridge.
+    const porridge = makeRecipe({ name: "Oats Porridge", category: "Khichdi", proteinPer100G: 4, carbsPer100G: 12, fatPer100G: 2, minGrams: 200, maxGrams: 250, idealGrams: 200 })
+    const peanutButter = makeRecipe({ name: "Peanut Butter", category: "Spread", proteinPer100G: 25, carbsPer100G: 20, fatPer100G: 50, minGrams: 15, maxGrams: 30, idealGrams: 15 })
+    const target: DailyRecipeTarget = { kcal: 400, proteinG: 15, carbsG: 20, fatG: 28, fiberG: 5 }
+    const day = makeDay([pipeline(porridge)], target, "breakfast")
+    const result = repairDay(day, target, buildRepairPool([pipeline(porridge), pipeline(peanutButter)]), constraints, new Map())
+    expect(result.day.meals[0].items.map((i) => i.recipe.name)).toEqual(["Oats Porridge"])
   })
 
   it("never introduces a duplicate recipe inside one meal", () => {
@@ -168,7 +190,7 @@ describe("repairWeek", () => {
     const result = repairWeek(days, target, pool, constraints)
 
     const leanUse = result.days.flatMap((d) => d.meals.flatMap((m) => m.items)).filter((i) => i.recipe.name === "Lean Sabzi").length
-    expect(leanUse).toBeLessThanOrEqual(MAX_RECIPE_REPEATS_PER_WEEK)
+    expect(leanUse).toBeLessThanOrEqual(MAX_SABZI_REPEATS_PER_WEEK)
     expect(result.swaps.length).toBe(leanUse)
   })
 
@@ -293,12 +315,44 @@ describe("enforceMealShape", () => {
     return { dayIndex: 0, meals, totals: { kcal: 0, proteinG: 0, carbsG: 0, fatG: 0, fiberG: 0 }, cappedRecipeNames: [], unknownRecipeNames: [] }
   }
 
-  it("fills out a breakfast too light to reach an equal share", () => {
+  it("fills out a breakfast too light to reach its share, with plain curd", () => {
     const day = balanceDayToTargets(threeMealDay(), target)
     const before = mealShapeScore(day, target)
     const result = enforceMealShape(day, target, buildRepairPool([chilla, curd, roti, dal, rice, paneer]), constraints, new Map())
     expect(mealShapeScore(result.day, target)).toBeLessThan(before)
     expect(result.swaps.length).toBeGreaterThan(0)
+    expect(result.swaps.some((s) => s.slot === "breakfast" && s.from === ADDED_TO_FILL_MEAL && s.to === "Curd")).toBe(true)
+  })
+
+  it("never pads breakfast with a vegetable raita — only plain curd is a breakfast side", () => {
+    const vegRaita = pipeline(makeRecipe({ name: "Mixed Vegetable Raita", category: "Raita", mainOrMid: "mid", proteinPer100G: 4, carbsPer100G: 6, fatPer100G: 4, minGrams: 100, idealGrams: 150, maxGrams: 250 }))
+    const day = balanceDayToTargets(threeMealDay(), target)
+    const result = enforceMealShape(day, target, buildRepairPool([chilla, vegRaita, roti, dal, rice, paneer]), constraints, new Map())
+    expect(result.swaps.filter((s) => s.slot === "breakfast").map((s) => s.to)).not.toContain("Mixed Vegetable Raita")
+  })
+
+  it("tops up a snack that cannot reach its share with a fruit or a handful of nuts", () => {
+    const apple = pipeline(makeRecipe({ name: "Apple", category: "Fruit", mainOrMid: "mid", proteinPer100G: 0.3, carbsPer100G: 14, fatPer100G: 0.2, minGrams: 100, idealGrams: 150, maxGrams: 150 }))
+    const walnuts = pipeline(makeRecipe({ name: "Soaked Walnuts", category: "Nuts", mainOrMid: "mid", proteinPer100G: 15, carbsPer100G: 14, fatPer100G: 65, minGrams: 10, idealGrams: 20, maxGrams: 30 }))
+    const base = threeMealDay()
+    base.meals.splice(1, 0, { slot: "mid_morning", items: [{ recipe: apple, grams: apple.idealGrams }] })
+    // A target these dishes can reach: a shape move is refused if it makes the day's worst macro worse.
+    const fiveTarget: DailyRecipeTarget = { kcal: 1800, proteinG: 95, carbsG: 215, fatG: 60, fiberG: 25 }
+    const day = balanceDayToTargets(base, fiveTarget)
+    const result = enforceMealShape(day, fiveTarget, buildRepairPool([chilla, curd, roti, dal, rice, paneer, apple, walnuts]), constraints, new Map())
+    expect(result.swaps.some((s) => s.slot === "mid_morning" && s.from === ADDED_TO_FILL_MEAL && s.to === "Soaked Walnuts")).toBe(true)
+    expect(result.day.meals.find((m) => m.slot === "mid_morning")!.items).toHaveLength(2)
+  })
+
+  it("takes a side off a breakfast that carries more than its share", () => {
+    // A paratha pinned at 150 g (420 kcal) plus curd is ~480 kcal against a ~362 kcal share: only removing the curd gets closer.
+    const heavy = pipeline(makeRecipe({ name: "Stuffed Paratha", category: "Paratha", proteinPer100G: 8, carbsPer100G: 40, fatPer100G: 9.8, minGrams: 150, idealGrams: 150, maxGrams: 150 }))
+    const base = threeMealDay()
+    base.meals[0] = { slot: "breakfast", items: [heavy, curd].map((recipe) => ({ recipe, grams: recipe.idealGrams })) }
+    const day = balanceDayToTargets(base, target)
+    const result = enforceMealShape(day, target, buildRepairPool([heavy, curd, roti, dal, rice, paneer]), constraints, new Map())
+    expect(result.swaps).toContainEqual({ dayIndex: 0, slot: "breakfast", from: "Curd", to: REMOVED_TO_TRIM_MEAL })
+    expect(result.day.meals[0].items.map((i) => i.recipe.name)).toEqual(["Stuffed Paratha"])
   })
 
   it("swaps lunch and dinner whole when the protein dish is at the wrong one", () => {

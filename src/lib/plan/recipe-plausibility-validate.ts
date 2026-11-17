@@ -63,6 +63,15 @@ const NO_MAIN_REQUIRED_SLOTS = new Set(["wake_up", "mid_morning", "evening", "be
 // any meal that has a staple, and at breakfast.
 const RAITA_CATEGORY = "raita"
 
+// A spread (peanut butter, nutella, mayonnaise), chutney or dip is a
+// condiment: a spoonful beside a dish. It never counts as the meal's MAIN
+// item (Peanut Butter is tagged "main" in the source), a meal cannot be made
+// of condiments alone, and a spread may not carry the meal's calories — a
+// real 15 Oct breakfast had the engine filling its share with 1180 kcal/100 g
+// peanut butter, which the dietitian called "not ideal at all".
+const SPREAD_CATEGORY = "spread"
+export const SPREAD_MAX_MEAL_KCAL_SHARE = 0.25
+
 export function describePlausibilityProblems(day: GroundedRecipeDay, constraints: ClientRecipeConstraints): string[] {
   const problems: string[] = []
   const dayRestriction = constraints.dayRestrictions?.get(day.dayIndex)
@@ -86,6 +95,8 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
     const itemBuckets: RecipeCategoryBucket[] = []
     // The meal's cooked course(s): a dal, a vegetarian curry, a sabzi.
     const curryCourseNames: string[] = []
+    const condimentNames: string[] = []
+    const mealKcal = meal.items.reduce((s, item) => s + (item.recipe.kcalPer100G * item.grams) / 100, 0)
 
     for (const item of meal.items) {
       if (namesSeen.has(item.recipe.name)) {
@@ -95,6 +106,14 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
 
       const bucket = recipeCategoryBucket(item.recipe.category, item.recipe.name)
       itemBuckets.push(bucket)
+      const isCondiment = bucket === "condiment"
+      if (isCondiment) {
+        condimentNames.push(item.recipe.name)
+        const share = mealKcal > 0 ? (item.recipe.kcalPer100G * item.grams) / 100 / mealKcal : 0
+        if (item.recipe.category.trim().toLowerCase() === SPREAD_CATEGORY && share > SPREAD_MAX_MEAL_KCAL_SHARE) {
+          problems.push(`${meal.slot}'s "${item.recipe.name}" is a spread carrying ${Math.round(share * 100)}% of the meal's calories — a spread is a garnish, not the meal`)
+        }
+      }
       if (isSelfContainedMeal(item.recipe.category, bucket, item.recipe.carbsPer100G)) hasSelfContainedDish = true
       // A real egg/meat/fish dish (not eligible for plain vegetarian) is
       // its own protein course, substituting for dal the same way
@@ -115,7 +134,9 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
       else if (MEAT_CONFLICTING_BUCKETS.has(bucket)) hasConflictingVegSideDish = true
       if (!isAnimalProtein && isCurryCourse(item.recipe.category, bucket, item.recipe.carbsPer100G)) curryCourseNames.push(item.recipe.name)
 
-      if (item.recipe.mainOrMid === "main") {
+      // A condiment is never the dish a meal is built on, whatever the
+      // source's Main/Mid column says of it.
+      if (item.recipe.mainOrMid === "main" && !isCondiment) {
         hasMain = true
         // A liquid dish (soup/tea/shake) can't be the ONLY main-tagged item
         // anchoring a meal — but a real liquid dal served alongside a solid
@@ -160,6 +181,9 @@ export function describePlausibilityProblems(day: GroundedRecipeDay, constraints
       }
     }
 
+    if (condimentNames.length === meal.items.length) {
+      problems.push(`${meal.slot} is only a spread/chutney/dip (${condimentNames.join(", ")}) — a condiment goes beside a dish, never on its own`)
+    }
     if (!hasMain && !NO_MAIN_REQUIRED_SLOTS.has(meal.slot)) problems.push(`${meal.slot} has no MAIN item (all accompaniments)`)
     if (richCount > 1) problems.push(`${meal.slot} stacks ${richCount} rich (heavy meal/dessert) dishes together`)
     if (liquidMainItemNames.length > 0 && !hasSolidMain && !NO_MAIN_REQUIRED_SLOTS.has(meal.slot)) {

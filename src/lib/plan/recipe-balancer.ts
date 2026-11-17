@@ -31,7 +31,7 @@
 
 import type { DailyRecipeTarget, GroundedRecipeDay, GroundedRecipeMeal } from "./recipe-types"
 import { computeMealsTotals } from "./recipe-grounding"
-import { equalMainMealKcal, isMainMealSlot, PROTEIN_RICH_SHARE } from "./recipe-meal-balance"
+import { MEAL_KCAL_SHARES, PROTEIN_RICH_SHARE, slotKcalTargets } from "./recipe-meal-balance"
 import { getMealServingLimitsG, getServingLimitsG } from "./recipe-serving-limits"
 
 const WEIGHTS = { kcal: 0.4, proteinG: 2.0, carbsG: 1.0, fatG: 1.0, fiberG: 0.5 }
@@ -39,13 +39,21 @@ const ITERATIONS = 200
 const DAMPING_MIN = 0.3
 const DAMPING_MAX = 3
 const CAP_MARGIN_G = 2
-// Equal breakfast/lunch/dinner calories, and the protein-rich meal's floor
-// (recipe-meal-balance.ts), as extra least-squares terms. A meal's kcal
-// residual pulls with the day kcal residual's weight. The protein-rich floor
-// is scaled so a 1% shortfall pulls as hard as a 1% meal-kcal gap: in raw
-// units (grams against kcal) it would otherwise be ~20x weaker and do nothing
-// - measured on the saved plans, where it moved 0 of 287 days.
-const MEAL_KCAL_WEIGHT = WEIGHTS.kcal
+// Each slot's share of the day's calories (breakfast 15-20%, lunch/dinner
+// 25-30%, the rest to the snacks — recipe-meal-balance.ts), and the
+// protein-rich meal's floor, as extra least-squares terms. A meal's kcal
+// residual pulls with SLOT_KCAL_WEIGHT_FACTOR of the day kcal residual's
+// weight. The factor is 0.6, not 1: five slots now carry a term where three
+// did, and at full weight the aggregate pull against the macro terms cost
+// macro convergence on replay (days within ±8% 326 -> 319 over 53 saved
+// plans); at 0.6 it is 323 with the same number of weeks passing as before
+// and MORE days inside the split (170 -> 177), since enforceMealShape() does
+// the rest at the dish level. The protein-rich floor is scaled so a 1%
+// shortfall pulls as hard as a 1% meal-kcal gap: in raw units (grams against
+// kcal) it would otherwise be ~20x weaker and do nothing - measured on the
+// saved plans, where it moved 0 of 287 days.
+const SLOT_KCAL_WEIGHT_FACTOR = 0.6
+const MEAL_KCAL_WEIGHT = WEIGHTS.kcal * SLOT_KCAL_WEIGHT_FACTOR
 
 type MacroKey = keyof typeof WEIGHTS
 
@@ -78,14 +86,15 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
   )
   const perGram = flatItems.map((item) => macroPerGram(item.recipe))
   const locked = flatItems.map((item) => item.gramsLocked === true)
-  // Which meal each flat item sits in, and which meals are main meals with food.
+  // Which meal each flat item sits in, and which meals have food.
   const mealOf = day.meals.flatMap((meal, m) => meal.items.map(() => m))
-  const mainMeals = day.meals.flatMap((meal, m) => (isMainMealSlot(meal.slot) && meal.items.length > 0 ? [m] : []))
-  const isMain = day.meals.map((_, m) => mainMeals.includes(m))
+  const mealsWithFood = day.meals.flatMap((meal, m) => (meal.items.length > 0 ? [m] : []))
   const richMeal = target.proteinRichSlot ? day.meals.findIndex((meal) => meal.slot === target.proteinRichSlot && meal.items.length > 0) : -1
   const richProteinTarget = PROTEIN_RICH_SHARE * target.proteinG
-  const typicalMealKcal = target.kcal / Math.max(mainMeals.length, 1)
-  const richWeight = richProteinTarget > 0 ? MEAL_KCAL_WEIGHT * (typicalMealKcal / richProteinTarget) ** 2 : 0
+  // The protein-rich meal's own calorie share, so a 1% protein shortfall
+  // there pulls like a 1% kcal gap on that same meal.
+  const richShare = richMeal >= 0 ? (MEAL_KCAL_SHARES[day.meals[richMeal].slot] ?? 0.275) : 0.275
+  const richWeight = richProteinTarget > 0 ? MEAL_KCAL_WEIGHT * ((richShare * target.kcal) / richProteinTarget) ** 2 : 0
   let x = flatItems.map((item) => item.grams)
 
   for (let iter = 0; iter < ITERATIONS; iter++) {
@@ -104,8 +113,12 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
       mealKcal[mealOf[i]] += perGram[i].kcal * grams
       mealProtein[mealOf[i]] += perGram[i].proteinG * grams
     })
-    const snackKcal = mealKcal.reduce((s, k, m) => (isMain[m] ? s : s + k), 0)
-    const share = equalMainMealKcal(mainMeals.length, target.kcal, snackKcal)
+    // Wake-up/bedtime keep what they carry; every other slot with food is
+    // pulled toward its share of what is left (recipe-meal-balance.ts).
+    const slotTargets = slotKcalTargets(
+      mealsWithFood.map((m) => ({ slot: day.meals[m].slot, kcal: mealKcal[m] })),
+      target.kcal
+    )
     // One-sided: a protein-rich meal already above its floor is not pulled down.
     const richBelow = richMeal >= 0 && mealProtein[richMeal] < richProteinTarget
 
@@ -118,8 +131,9 @@ export function balanceDayToTargets(day: GroundedRecipeDay, target: DailyRecipeT
         den += WEIGHTS[key] * perGram[i][key] * predicted[key]
       }
       const m = mealOf[i]
-      if (share !== null && isMain[m]) {
-        num += MEAL_KCAL_WEIGHT * perGram[i].kcal * share
+      const slotTarget = slotTargets.get(day.meals[m].slot)
+      if (slotTarget !== undefined) {
+        num += MEAL_KCAL_WEIGHT * perGram[i].kcal * slotTarget
         den += MEAL_KCAL_WEIGHT * perGram[i].kcal * mealKcal[m]
       }
       if (richBelow && m === richMeal) {
