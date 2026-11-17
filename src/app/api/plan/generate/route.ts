@@ -1,6 +1,6 @@
 /**
  * POST /api/plan/generate — turns a roadmap snapshot + week number into a
- * priced, food-filled diet plan. Node runtime (not edge): the OpenAI call
+ * priced, food-filled diet plan. Node runtime (not edge): the Claude call
  * plus up to 3 retries with backoff can run long. See CLAUDE.md "THE ONE
  * RULE THAT MATTERS" — every number here comes from roadmap.ts /
  * exchange-solver.ts / quantity.ts; the LLM (inside selectFoods) only ever
@@ -125,11 +125,13 @@ export const runtime = "nodejs"
 // reported "1m / 1m" — hitting OUR limit, not the platform's, and returning
 // a 504 instead of a plan.
 //
-// 300 is headroom, not an expectation. The real budget is enforced where it
-// belongs: openai-client.ts bounds every model call at 25s with no SDK
-// retries, so best-of-3 costs ~25s worst case regardless of what the API
-// does, and a healthy run measures 7-12s end to end. This ceiling exists so
-// a slow-but-recoverable request finishes instead of being killed.
+// The real budget is enforced where it belongs: anthropic-client.ts gives
+// every model call a hard 90s wall-clock deadline (SDK retries included).
+// Best-of-N runs its calls concurrently, so its worst case is one deadline;
+// the exchange selector's 3 sequential attempts are 270s worst case, which
+// is what this ceiling has to clear. (On OpenAI the per-call bound was 25s
+// and a healthy run measured 7-12s; Claude's real latency is not yet
+// measured.)
 export const maxDuration = 300
 
 const exchangeRequestSchema = z.object({

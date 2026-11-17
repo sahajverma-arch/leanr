@@ -1,6 +1,6 @@
 /**
  * Dev-only tool: exercises selectRecipes() end-to-end against a real
- * roadmap and real OpenAI calls, without going through the HTTP route (no
+ * roadmap and real Claude API calls, without going through the HTTP route (no
  * auth/session plumbing needed). Useful for the real prompt/model tuning
  * work CLAUDE.md's "The recipe engine" section flags as still open — run
  * with a roadmap id and optionally a cuisine:

@@ -31,7 +31,8 @@ import type { RecipeCuisine } from "../src/lib/foods/recipe-cuisine-mapping"
 import { balanceDayToTargets } from "../src/lib/plan/recipe-balancer"
 import { blockingProblems } from "../src/lib/plan/recipe-day-diagnosis"
 import { groundSelection } from "../src/lib/plan/recipe-grounding"
-import { createOpenAIClient, OPENAI_MODEL } from "../src/lib/plan/openai-client"
+import { ANTHROPIC_MODEL, callClaude } from "../src/lib/plan/anthropic-client"
+import { extractJson } from "../src/lib/plan/llm-json"
 import { buildInitialMessages } from "../src/lib/plan/recipe-prompt"
 import { llmRecipeSelectionSchema } from "../src/lib/plan/recipe-schema"
 import type { GroundedRecipeDay, RecipeAchievedMacros } from "../src/lib/plan/recipe-types"
@@ -43,14 +44,6 @@ const MACRO_KEYS = ["kcal", "proteinG", "carbsG", "fatG"] as const
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`)
   return i === -1 ? undefined : process.argv[i + 1]
-}
-
-/** Same permissive extraction the production selector uses — a model may wrap JSON in prose. */
-function extractJson(raw: string): unknown {
-  const start = raw.indexOf("{")
-  const end = raw.lastIndexOf("}")
-  if (start === -1 || end === -1) throw new Error("No JSON object found in model response")
-  return JSON.parse(raw.slice(start, end + 1))
 }
 
 function weeklyAverage(days: GroundedRecipeDay[]): RecipeAchievedMacros {
@@ -100,21 +93,14 @@ async function main() {
     process.exit(0)
   }
 
-  const client = createOpenAIClient()
   const messages = buildInitialMessages(ctx.input)
   const attempts: Attempt[] = []
 
   for (let i = 1; i <= n; i++) {
-    const started = Date.now()
     try {
-      const completion = await client.chat.completions.create({
-        model: OPENAI_MODEL,
-        messages,
-        response_format: { type: "json_object" },
-        temperature: 0.3,
-      })
-      const latencyMs = Date.now() - started
-      const raw = completion.choices[0]?.message?.content
+      // The same call production makes (anthropic-client.ts), so this
+      // script measures the real request, not a copy of it.
+      const { rawResponse: raw, latencyMs } = await callClaude(messages)
       if (!raw) throw new Error("empty response")
 
       const parsed = llmRecipeSelectionSchema.parse(extractJson(raw))
@@ -192,9 +178,9 @@ async function main() {
             : "NOT VALIDATED — DO NOT ISSUE TO A CLIENT",
           statusLevel: best.weekPasses ? "warn" : "error",
           statusNote: best.weekPasses
-            ? `Accepted on WEEKLY-AVERAGE macros (kcal ${dev("kcal").toFixed(1)}%, protein ${dev("proteinG").toFixed(1)}%, carbs ${dev("carbsG").toFixed(1)}%, fat ${dev("fatG").toFixed(1)}%) — the same standard the exchange engine uses. Best of ${attempts.length} independent single-call attempts on ${OPENAI_MODEL}. ${best.daysPassing} of 7 days also clear the stricter per-day tolerance; the rest vary day to day around the target. Not written to the database. Portion sizes on bulky low-calorie items can be balancer artifacts — check them before issuing.`
+            ? `Accepted on WEEKLY-AVERAGE macros (kcal ${dev("kcal").toFixed(1)}%, protein ${dev("proteinG").toFixed(1)}%, carbs ${dev("carbsG").toFixed(1)}%, fat ${dev("fatG").toFixed(1)}%) — the same standard the exchange engine uses. Best of ${attempts.length} independent single-call attempts on ${ANTHROPIC_MODEL}. ${best.daysPassing} of 7 days also clear the stricter per-day tolerance; the rest vary day to day around the target. Not written to the database. Portion sizes on bulky low-calorie items can be balancer artifacts — check them before issuing.`
             : `NOT accepted: weekly-average macros are outside tolerance. Best of ${attempts.length} attempts, shown for review only.`,
-          provenanceNote: `Best-of-${attempts.length} selection, ${OPENAI_MODEL}, one call per attempt, no day retries. Recipe names proposed by the model; every gram computed by the production balancer. Engineering review artifact.`,
+          provenanceNote: `Best-of-${attempts.length} selection, ${ANTHROPIC_MODEL}, one call per attempt, no day retries. Recipe names proposed by the model; every gram computed by the production balancer. Engineering review artifact.`,
           days: best.days.map((d) => ({
             dayIndex: d.dayIndex,
             totals: d.totals,

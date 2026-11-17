@@ -6,7 +6,7 @@ Internal dietitian tool for Fitelo. Staff-only. Counselling intake → determini
 - Next.js 14 App Router + TypeScript (strict). Server Actions for mutations, Route Handlers for anything the AI touches.
 - Supabase: Postgres + Auth (Google OAuth) + RLS. Drizzle ORM. No Prisma.
 - Vercel deploy. Node runtime for AI routes (not edge — long timeouts needed).
-- OpenAI for LLM calls: default `baseURL`, key `OPENAI_API_KEY`, model from `OPENAI_MODEL` env var. Replaced NVIDIA NIM on 2026-09-08 when a real OpenAI key became available — every historical "live NVIDIA run" note further down this file describes that retired provider and is left as written.
+- Claude API (`@anthropic-ai/sdk`) for LLM calls: key `ANTHROPIC_API_KEY`, model from `ANTHROPIC_MODEL` (optional, default `claude-opus-5-5`), thinking effort from `ANTHROPIC_EFFORT` (optional, default `medium`). Every call goes through `callClaude()` in `src/lib/plan/anthropic-client.ts`. Replaced OpenAI on 2026-11-17 (the OpenAI account ran out of credits), which itself replaced NVIDIA NIM on 2026-09-08 — every "OpenAI", `openai-client.ts`, `gpt-*` and "live NVIDIA run" note further down this file describes a retired provider and is left as written. **Every latency, cost, rate-limit and convergence figure below was measured on those providers, not on Claude.** Three things differ and are not yet measured: no `temperature` is sent (current Claude models reject it; attempt-to-attempt variety comes from the seeded prompt rotation), each call has a 90s deadline with 2 SDK retries inside it (was 25s, 0 retries), and JSON is asked for in the prompt and read with `extractJson()` (there is no `response_format`).
 - Tailwind + shadcn/ui. No component library beyond that.
 
 ## THE ONE RULE THAT MATTERS

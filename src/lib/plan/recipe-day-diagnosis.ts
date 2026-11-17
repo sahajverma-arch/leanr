@@ -6,7 +6,7 @@
  *   diagnoseDay()      — what do we tell the model when regenerating it?
  *
  * Lives outside recipe-selector.ts purely so it is unit-testable: that file
- * imports openai-client.ts, which validates server env at module load, so
+ * imports anthropic-client.ts, which validates server env at module load, so
  * anything reachable from it cannot be exercised in a plain Vitest run.
  * Same separation as recipe-validate.ts / recipe-plausibility-validate.ts.
  */

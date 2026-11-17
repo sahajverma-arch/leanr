@@ -65,7 +65,7 @@ If you're about to write a prompt that asks a model to "calculate calories" or "
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Food selector — THE ONLY PLACE AN LLM RUNS                         │
-│  src/lib/plan/food-selector.ts (OpenAI)                             │
+│  src/lib/plan/food-selector.ts (Claude API)                         │
 │  picks food IDs to fill slots · never sees a calorie/macro number   │
 │  3 attempts + backoff → deterministic round-robin fallback          │
 └──────────────────────────────┬──────────────────────────────────────┘
@@ -94,14 +94,14 @@ If you're about to write a prompt that asks a model to "calculate calories" or "
 
 - Next.js 14 App Router + TypeScript (strict). Server Actions for mutations, Route Handlers for anything the AI touches (Node runtime, not edge — long timeouts).
 - Supabase: Postgres + Auth (Google OAuth, `@fitelo.co` only) + RLS. Drizzle ORM.
-- OpenAI for the one LLM call in the app (food selection only).
+- Claude API (Anthropic) for the LLM calls — it only ever names foods or recipes, never a number.
 - Tailwind + shadcn/ui (Base UI, not Radix). `@react-pdf/renderer` for PDF export. `recharts` for the macro-split donut.
 
 ## Getting started
 
 ```bash
 npm install
-cp .env.example .env.local   # fill in Supabase + OpenAI credentials
+cp .env.example .env.local   # fill in Supabase + Anthropic credentials
 npm run dev
 ```
 
